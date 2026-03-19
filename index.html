@@ -3,146 +3,430 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Swarm Educational Animations</title>
+<title>Swarm Animations</title>
 <style>
+:root {
+    --bg: #111111;
+    --surface: #1a1a1a;
+    --border: rgba(255,255,255,0.06);
+    --text: #f5f5f7;
+    --text-secondary: rgba(245,245,247,0.5);
+    --text-tertiary: rgba(245,245,247,0.3);
+    --orange: #d4633a;
+    --orange-dim: rgba(212,99,58,0.15);
+    --orange-glow: rgba(212,99,58,0.08);
+    --radius: 16px;
+    --font: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
 body {
-    background: #272727;
-    color: #ffffff;
-    font-family: Arial, sans-serif;
-    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.5;
 }
-.header {
-    background: #d4633a;
-    padding: 16px 0;
-    text-align: center;
-    position: sticky;
+
+/* ── Nav ── */
+nav {
+    position: fixed;
     top: 0;
-    z-index: 10;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: rgba(17,17,17,0.8);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    transition: background 0.3s;
 }
-.header h1 {
-    font: italic bold 28px Georgia, serif;
-    color: #ffffff;
-}
-.header p {
-    font-size: 14px;
-    color: rgba(255,255,255,0.85);
-    margin-top: 4px;
-}
-.container {
-    max-width: 1320px;
+
+.nav-inner {
+    max-width: 1200px;
     margin: 0 auto;
-    padding: 40px 20px;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
 }
+
+.logo-hex {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+}
+
+.nav-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text);
+}
+
+.nav-links {
+    margin-left: auto;
+    display: flex;
+    gap: 24px;
+    list-style: none;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.nav-links a {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-decoration: none;
+    white-space: nowrap;
+    transition: color 0.2s;
+}
+
+.nav-links a:hover {
+    color: var(--orange);
+}
+
+/* ── Hero ── */
+.hero {
+    padding: 160px 24px 80px;
+    text-align: center;
+    max-width: 720px;
+    margin: 0 auto;
+}
+
+.hero-hex {
+    width: 56px;
+    height: 56px;
+    margin: 0 auto 28px;
+    opacity: 0.9;
+}
+
+.hero h1 {
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+    margin-bottom: 16px;
+}
+
+.hero h1 span {
+    color: var(--orange);
+}
+
+.hero p {
+    font-size: 18px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    max-width: 520px;
+    margin: 0 auto;
+}
+
+.hero-links {
+    margin-top: 24px;
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+}
+
+.hero-links a {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--orange);
+    text-decoration: none;
+    transition: opacity 0.2s;
+}
+
+.hero-links a:hover {
+    opacity: 0.7;
+}
+
+/* ── Scenes ── */
+.scenes {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 24px 80px;
+}
+
 .scene {
-    margin-bottom: 48px;
+    margin-bottom: 64px;
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
 }
+
+.scene.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.scene-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 6px;
+}
+
+.scene-number {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--orange);
+    font-variant-numeric: tabular-nums;
+}
+
 .scene-title {
-    font: bold 20px Arial, sans-serif;
-    color: #ffffff;
-    margin-bottom: 8px;
-    padding-left: 4px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
 }
+
 .scene-desc {
     font-size: 14px;
-    color: rgba(255,255,255,0.6);
-    margin-bottom: 12px;
-    padding-left: 4px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    max-width: 600px;
 }
-.scene iframe {
+
+.scene-card {
+    position: relative;
+    padding-bottom: 53.125%; /* 680/1280 = 0.53125 */
+    height: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.scene-card:hover {
+    border-color: rgba(212,99,58,0.2);
+    box-shadow: 0 8px 40px var(--orange-glow);
+}
+
+.scene-card iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
-    max-width: 1280px;
-    height: 680px;
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 4px;
+    height: 100%;
+    border: none;
     display: block;
+    background: #272727;
 }
-.footer {
+
+/* ── Footer ── */
+footer {
+    border-top: 1px solid var(--border);
+    padding: 32px 24px;
     text-align: center;
-    padding: 32px 20px;
-    color: rgba(255,255,255,0.4);
+}
+
+.footer-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
     font-size: 13px;
-    border-top: 1px solid rgba(255,255,255,0.1);
+    color: var(--text-tertiary);
 }
-.footer a {
-    color: #d4633a;
+
+.footer-inner a {
+    color: var(--text-secondary);
     text-decoration: none;
+    transition: color 0.2s;
 }
-.footer a:hover {
-    text-decoration: underline;
+
+.footer-inner a:hover {
+    color: var(--orange);
+}
+
+.dot {
+    color: var(--text-tertiary);
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+    .hero { padding: 120px 20px 48px; }
+    .hero h1 { font-size: 32px; }
+    .hero p { font-size: 16px; }
+    .nav-links { display: none; }
+    .scene-title { font-size: 18px; }
+    .scenes { padding: 0 16px 48px; }
+    .scene { margin-bottom: 40px; }
 }
 </style>
 </head>
 <body>
-<div class="header">
-    <h1>Swarm Educational Animations</h1>
-    <p>Visual explanations of the Swarm decentralised storage network, based on the <a href="https://papers.ethswarm.org/p/book-of-swarm/" style="color:#fff;text-decoration:underline;">Book of Swarm</a></p>
+
+<!-- ── Nav ── -->
+<nav>
+    <div class="nav-inner">
+        <svg class="logo-hex" viewBox="0 0 100 100" fill="none">
+            <polygon points="50,3 93,28 93,72 50,97 7,72 7,28" stroke="#d4633a" stroke-width="4" fill="none"/>
+            <polygon points="50,22 73,38 73,62 50,78 27,62 27,38" stroke="#d4633a" stroke-width="3" fill="none" opacity="0.5"/>
+        </svg>
+        <span class="nav-title">Swarm Animations</span>
+        <ul class="nav-links">
+            <li><a href="#topology">Topology</a></li>
+            <li><a href="#push-sync">Push Sync</a></li>
+            <li><a href="#pull-sync">Pull Sync</a></li>
+            <li><a href="#retrieval">Retrieval</a></li>
+            <li><a href="#stamps">Stamps</a></li>
+            <li><a href="#erasure">Erasure</a></li>
+            <li><a href="#pss">PSS</a></li>
+            <li><a href="#act">ACT</a></li>
+            <li><a href="#feeds">Feeds</a></li>
+        </ul>
+    </div>
+</nav>
+
+<!-- ── Hero ── -->
+<section class="hero">
+    <svg class="hero-hex" viewBox="0 0 100 100" fill="none">
+        <polygon points="50,3 93,28 93,72 50,97 7,72 7,28" stroke="#d4633a" stroke-width="3" fill="none"/>
+        <polygon points="50,18 78,35 78,65 50,82 22,65 22,35" stroke="#d4633a" stroke-width="2" fill="none" opacity="0.4"/>
+    </svg>
+    <h1>How <span>Swarm</span> works</h1>
+    <p>Visual explanations of the Swarm decentralised storage network, based on the Book of Swarm.</p>
+    <div class="hero-links">
+        <a href="https://papers.ethswarm.org/p/book-of-swarm/">Book of Swarm &#8599;</a>
+        <a href="https://www.ethswarm.org/">ethswarm.org &#8599;</a>
+    </div>
+</section>
+
+<!-- ── Scenes ── -->
+<div class="scenes">
+
+    <div class="scene" id="topology">
+        <div class="scene-header">
+            <span class="scene-number">01</span>
+            <span class="scene-title">Network Topology</span>
+        </div>
+        <p class="scene-desc">Traditional internet funnels traffic through centralized intermediaries. Swarm routes data peer-to-peer with no single point of control.</p>
+        <div class="scene-card">
+            <iframe src="animations/topology-top-bottom.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="push-sync">
+        <div class="scene-header">
+            <span class="scene-number">02</span>
+            <span class="scene-title">Push Syncing</span>
+        </div>
+        <p class="scene-desc">Chunks are pushed outward through the network to the neighbourhood responsible for their address.</p>
+        <div class="scene-card">
+            <iframe src="animations/push-syncing.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="pull-sync">
+        <div class="scene-header">
+            <span class="scene-number">04</span>
+            <span class="scene-title">Pull Syncing</span>
+        </div>
+        <p class="scene-desc">Nodes request missing chunks from peers to fill gaps in their local store.</p>
+        <div class="scene-card">
+            <iframe src="animations/pull-syncing.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="retrieval">
+        <div class="scene-header">
+            <span class="scene-number">05</span>
+            <span class="scene-title">Chunk Retrieval</span>
+        </div>
+        <p class="scene-desc">Requests are forwarded via Kademlia routing to the closest node, which returns the chunk along the same path.</p>
+        <div class="scene-card">
+            <iframe src="animations/chunk-retrieval.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="stamps">
+        <div class="scene-header">
+            <span class="scene-number">06</span>
+            <span class="scene-title">Postage Stamps</span>
+        </div>
+        <p class="scene-desc">Every chunk requires a postage stamp — proof of payment that funds its storage on the network.</p>
+        <div class="scene-card">
+            <iframe src="animations/postage-stamps.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="erasure">
+        <div class="scene-header">
+            <span class="scene-number">07</span>
+            <span class="scene-title">Erasure Coding</span>
+        </div>
+        <p class="scene-desc">Parity chunks enable file reconstruction even when some chunks are lost from the network.</p>
+        <div class="scene-card">
+            <iframe src="animations/erasure-coding.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="pss">
+        <div class="scene-header">
+            <span class="scene-number">08</span>
+            <span class="scene-title">PSS Messaging</span>
+        </div>
+        <p class="scene-desc">Trojan chunks carry encrypted messages routed to target neighbourhoods — enabling private communication.</p>
+        <div class="scene-card">
+            <iframe src="animations/pss-messaging.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="act">
+        <div class="scene-header">
+            <span class="scene-number">09</span>
+            <span class="scene-title">ACT Access Control</span>
+        </div>
+        <p class="scene-desc">The Access Control Trie manages encryption keys — granting and revoking access to content.</p>
+        <div class="scene-card">
+            <iframe src="animations/act-access-control.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
+    <div class="scene" id="feeds">
+        <div class="scene-header">
+            <span class="scene-number">10</span>
+            <span class="scene-title">Feeds</span>
+        </div>
+        <p class="scene-desc">Single-owner chunks form updateable pointers on immutable storage — each version points to the latest content.</p>
+        <div class="scene-card">
+            <iframe src="animations/feeds.html" loading="lazy" scrolling="no"></iframe>
+        </div>
+    </div>
+
 </div>
-<div class="container">
 
-    <div class="scene">
-        <div class="scene-title">1. Topology (Side-by-Side)</div>
-        <div class="scene-desc">Traditional internet funnels traffic through centralized intermediaries — Swarm routes data peer-to-peer.</div>
-        <iframe src="animations/topology-left-right.html" loading="lazy"></iframe>
+<!-- ── Footer ── -->
+<footer>
+    <div class="footer-inner">
+        <span>Based on the <a href="https://papers.ethswarm.org/p/book-of-swarm/">Book of Swarm</a></span>
+        <span class="dot">&middot;</span>
+        <a href="https://www.ethswarm.org/">ethswarm.org</a>
     </div>
+</footer>
 
-    <div class="scene">
-        <div class="scene-title">2. Topology (Stacked)</div>
-        <div class="scene-desc">The same comparison in a top-bottom layout.</div>
-        <iframe src="animations/topology-top-bottom.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">3. Push Syncing</div>
-        <div class="scene-desc">Chunks are pushed outward through the network to the neighbourhood responsible for their address.</div>
-        <iframe src="animations/push-syncing.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">4. Pull Syncing</div>
-        <div class="scene-desc">Nodes request missing chunks from peers to fill gaps in their local store.</div>
-        <iframe src="animations/pull-syncing.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">5. Chunk Retrieval</div>
-        <div class="scene-desc">Requests are forwarded via Kademlia routing to the closest node, which returns the chunk along the same path.</div>
-        <iframe src="animations/chunk-retrieval.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">6. Postage Stamps</div>
-        <div class="scene-desc">Every chunk requires a postage stamp — proof of payment that funds its storage on the network.</div>
-        <iframe src="animations/postage-stamps.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">7. Erasure Coding</div>
-        <div class="scene-desc">Parity chunks enable file reconstruction even when some chunks are lost from the network.</div>
-        <iframe src="animations/erasure-coding.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">8. PSS Messaging</div>
-        <div class="scene-desc">Trojan chunks carry encrypted messages routed to target neighbourhoods — enabling private communication over Swarm.</div>
-        <iframe src="animations/pss-messaging.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">9. ACT Access Control</div>
-        <div class="scene-desc">The Access Control Trie manages encryption keys — granting and revoking access to content on Swarm.</div>
-        <iframe src="animations/act-access-control.html" loading="lazy"></iframe>
-    </div>
-
-    <div class="scene">
-        <div class="scene-title">10. Feeds</div>
-        <div class="scene-desc">Single-owner chunks form updateable pointers on immutable storage — each version points to the latest content.</div>
-        <iframe src="animations/feeds.html" loading="lazy"></iframe>
-    </div>
-
-</div>
-<div class="footer">
-    Design and concept by <a href="https://github.com/Cafe137">@Cafe137</a> · Based on the <a href="https://papers.ethswarm.org/p/book-of-swarm/">Book of Swarm</a> · <a href="https://www.ethswarm.org/">ethswarm.org</a>
-</div>
+<!-- ── Scroll reveal ── -->
+<script>
+const scenes = document.querySelectorAll('.scene');
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+        if (e.isIntersecting) {
+            e.target.classList.add('visible');
+        }
+    });
+}, { threshold: 0.1 });
+scenes.forEach(s => observer.observe(s));
+</script>
 </body>
 </html>

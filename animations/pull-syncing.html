@@ -6,7 +6,7 @@
 <title>Pull Syncing – Ethswarm</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; overflow: hidden; }
 canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
 </style>
 </head>
@@ -111,11 +111,11 @@ const NUM_CHUNKS = 5; // chunks to sync
 const STORE_SLOTS = 8; // total store slots
 
 // Timing (seconds)
-const PHASE_CHECK = 1.2;      // central node pulse/check
-const PHASE_REQUEST = 0.8;    // request travels to peer
-const PHASE_RESPONSE = 0.8;   // chunk travels back
-const PHASE_ABSORB = 0.4;     // chunk absorbed into store
-const PHASE_GAP = 0.3;        // gap between chunks
+const PHASE_CHECK = 2.0;      // central node pulse/check
+const PHASE_REQUEST = 1.6;    // request travels to peer
+const PHASE_RESPONSE = 1.6;   // chunk travels back
+const PHASE_ABSORB = 0.8;     // chunk absorbed into store
+const PHASE_GAP = 0.6;        // gap between chunks
 const CYCLE_PAUSE = 3.0;      // pause before reset
 
 // Pre-generate chunk hashes

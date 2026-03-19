@@ -6,7 +6,7 @@
 <title>Push Syncing – Ethswarm</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; overflow: hidden; }
 canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
 </style>
 </head>
@@ -164,11 +164,11 @@ const chunkPath = [
 const totalPathLen = pathLen(chunkPath);
 
 // Timing per chunk (seconds)
-const APPEAR_DUR = 0.3;       // chunk appears at uploader
-const TRAVEL_DUR = 2.0;       // chunk travels relay path
-const FAN_DUR = 0.6;          // chunk fans out to neighbourhood nodes
-const GLOW_DUR = 0.8;         // neighbourhood glow/pulse
-const PAUSE_DUR = 0.5;        // pause before next chunk
+const APPEAR_DUR = 0.5;       // chunk appears at uploader
+const TRAVEL_DUR = 3.0;       // chunk travels relay path
+const FAN_DUR = 0.9;          // chunk fans out to neighbourhood nodes
+const GLOW_DUR = 1.2;         // neighbourhood glow/pulse
+const PAUSE_DUR = 0.7;        // pause before next chunk
 const CHUNK_CYCLE = APPEAR_DUR + TRAVEL_DUR + FAN_DUR + GLOW_DUR + PAUSE_DUR;
 const TOTAL_CYCLE = NUM_CHUNKS * CHUNK_CYCLE + 1.5; // extra pause at end before loop
 

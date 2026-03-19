@@ -6,7 +6,7 @@
 <title>Chunk Retrieval – Ethswarm</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; overflow: hidden; }
 canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
 </style>
 </head>
@@ -120,9 +120,9 @@ function clamp01(t) { return Math.max(0, Math.min(1, t)); }
 // 1: chunk traveling back (hop by hop)
 // 2: arrival highlight at requester
 // 3: pause before next cycle
-const HOP_DURATION = 0.45;    // seconds per hop
-const HIGHLIGHT_DURATION = 0.6;
-const PAUSE_DURATION = 0.8;
+const HOP_DURATION = 1.0;     // seconds per hop
+const HIGHLIGHT_DURATION = 1.2;
+const PAUSE_DURATION = 1.0;
 
 let phase = 0;
 let phaseTime = 0;

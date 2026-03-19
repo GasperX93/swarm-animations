@@ -6,7 +6,7 @@
 <title>PSS Messaging – Ethswarm</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; overflow: hidden; }
 canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
 </style>
 </head>
@@ -158,7 +158,7 @@ function clamp01(t) { return Math.max(0, Math.min(1, t)); }
 // 4: recipient detects & decrypts (6.2-7.6s)
 // 5: message appears at recipient (7.6-8.6s)
 // 6: hold + fade (8.6-10.6s)
-const PHASE_TIMES = [0, 1.0, 2.2, 3.2, 6.2, 7.6, 8.6, 10.6];
+const PHASE_TIMES = [0, 1.4, 3.0, 4.4, 8.4, 10.2, 11.6, 14.0];
 let elapsed = 0;
 
 function getPhase() {

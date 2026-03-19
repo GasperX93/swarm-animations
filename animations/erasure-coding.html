@@ -6,7 +6,7 @@
 <title>Erasure Coding – Ethswarm</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; overflow: hidden; }
 canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
 </style>
 </head>
@@ -134,18 +134,18 @@ const SMALL_R = 22, SMALL_IR = 15;
 
 // Phases and timing (in seconds)
 const PHASE = {
-    FILE_APPEAR: 0,       // 0-1s: file fades in
-    SPLIT_DATA: 1.0,      // 1-2.5s: file splits into 4 data chunks
-    GEN_PARITY: 2.5,      // 2.5-4s: parity chunks generated
-    SPREAD: 4.0,          // 4-6s: all 8 chunks travel to storage nodes
-    HOLD_FULL: 6.0,       // 6-7s: hold showing all stored
-    LOSS: 7.0,            // 7-8.5s: 3 chunks turn red and fade
-    HOLD_LOSS: 8.5,       // 8.5-9.5s: hold showing loss
-    RETRIEVE: 9.5,        // 9.5-11.5s: surviving chunks travel back
-    RECONSTRUCT: 11.5,    // 11.5-13s: file reconstructs
-    HOLD_END: 13.0,       // 13-14.5s: hold final
-    FADE_OUT: 14.5,       // 14.5-15.5s: fade out everything
-    TOTAL: 15.5
+    FILE_APPEAR: 0,       // 0-2s: file fades in
+    SPLIT_DATA: 2.0,      // 2-5s: file splits into 4 data chunks
+    GEN_PARITY: 5.0,      // 5-8s: parity chunks generated
+    SPREAD: 8.0,          // 8-12s: all 8 chunks travel to storage nodes
+    HOLD_FULL: 12.0,      // 12-14s: hold showing all stored
+    LOSS: 14.0,           // 14-17s: 3 chunks turn red and fade
+    HOLD_LOSS: 17.0,      // 17-19s: hold showing loss
+    RETRIEVE: 19.0,       // 19-23s: surviving chunks travel back
+    RECONSTRUCT: 23.0,    // 23-26s: file reconstructs
+    HOLD_END: 26.0,       // 26-29s: hold final
+    FADE_OUT: 29.0,       // 29-31s: fade out everything
+    TOTAL: 31.0
 };
 
 let elapsed = 0;
@@ -155,12 +155,12 @@ const LOST_INDICES = [1, 4, 6]; // D2, P1, P3
 
 // ── Node positions ──
 // File position (left)
-const FILE_X = 120, FILE_Y = 340;
+const FILE_X = 120, FILE_Y = 280;
 
 // Chunk staging area (center-left)
 const CHUNK_STAGE_X = 360;
-const DATA_Y_START = 200, PARITY_Y_START = 390;
-const CHUNK_SPACING_Y = 70;
+const DATA_Y_START = 110, PARITY_Y_START = 430;
+const CHUNK_SPACING_Y = 50;
 
 // Storage nodes (center-right), 2 columns x 4 rows
 const STORE_X1 = 780, STORE_X2 = 980;
@@ -346,8 +346,7 @@ function drawScene() {
 
         // Section labels
         if (t > 0.3) {
-            renderText('Parity Chunks', CHUNK_STAGE_X, PARITY_Y_START - 40, `rgba(255,255,255,${clamp01((t - 0.3) / 0.3) * 0.7})`, 'bold 15px Arial, sans-serif');
-            renderText('(Reed-Solomon)', CHUNK_STAGE_X, PARITY_Y_START - 22, `rgba(255,255,255,${clamp01((t - 0.3) / 0.3) * 0.4})`, '13px Arial, sans-serif');
+            renderText('Parity Chunks (Reed-Solomon)', CHUNK_STAGE_X, PARITY_Y_START - 42, `rgba(255,255,255,${clamp01((t - 0.3) / 0.3) * 0.7})`, 'bold 13px Arial, sans-serif');
         }
     }
 
@@ -382,7 +381,7 @@ function drawScene() {
         const fadeLabels = 1 - clamp01(t / 0.3);
         if (fadeLabels > 0) {
             renderText('Data Chunks', CHUNK_STAGE_X, DATA_Y_START - 40, `rgba(255,255,255,${fadeLabels})`, 'bold 15px Arial, sans-serif');
-            renderText('Parity Chunks', CHUNK_STAGE_X, PARITY_Y_START - 40, `rgba(255,255,255,${fadeLabels * 0.7})`, 'bold 15px Arial, sans-serif');
+            renderText('Parity Chunks (Reed-Solomon)', CHUNK_STAGE_X, PARITY_Y_START - 42, `rgba(255,255,255,${fadeLabels * 0.7})`, 'bold 13px Arial, sans-serif');
         }
     }
 

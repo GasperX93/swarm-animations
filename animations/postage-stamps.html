@@ -6,7 +6,7 @@
 <title>Postage Stamps – Ethswarm</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; overflow: hidden; }
 canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
 </style>
 </head>
@@ -181,16 +181,16 @@ function lerp(a, b, t) { return a + (b - a) * t; }
 // ── Animation state ──
 const NUM_CHUNKS = 5;
 const PHASE_DURATIONS = {
-    fileAppear: 0.8,
-    fileSplit: 1.2,
-    chunksSettle: 0.5,
-    stampBatchAppear: 0.8,
-    stampAttach: 0.6,       // per chunk
-    stampAttachGap: 0.15,   // gap between stamps
-    chunksTravel: 1.8,
-    hold: 1.0,
-    fadeOut: 0.8,
-    pause: 0.4
+    fileAppear: 1.2,
+    fileSplit: 1.6,
+    chunksSettle: 0.7,
+    stampBatchAppear: 1.0,
+    stampAttach: 0.9,       // per chunk
+    stampAttachGap: 0.2,    // gap between stamps
+    chunksTravel: 2.2,
+    hold: 1.5,
+    fadeOut: 1.0,
+    pause: 0.5
 };
 
 let phaseTime = 0;
@@ -221,15 +221,15 @@ const filePos = { x: 130, y: 320 };
 
 const chunkOriginX = 130;
 const chunkTargetX = 370;
-const chunkStartY = 180;
-const chunkSpacing = 65;
+const chunkStartY = 210;
+const chunkSpacing = 60;
 
 function chunkPos(i) {
     return { x: chunkTargetX, y: chunkStartY + i * chunkSpacing };
 }
 
 const stampAreaX = 540;
-const stampBatchBox = { x: 460, y: 100, w: 160, h: 70 };
+const stampBatchBox = { x: 480, y: 80, w: 180, h: 75 };
 
 function stampedChunkPos(i) {
     return { x: stampAreaX, y: chunkStartY + i * chunkSpacing };
@@ -422,8 +422,8 @@ function drawPostageBatch() {
     renderText('Depth: 20', b.x + b.w/2, b.y + 30, 'rgba(255,255,255,0.8)', 'bold 13px monospace', 'center', 'top');
     renderText('Value: 10 BZZ', b.x + b.w/2, b.y + 48, 'rgba(255,255,255,0.8)', 'bold 13px monospace', 'center', 'top');
 
-    // Stamp icon next to box
-    iconStamp(b.x - 22, b.y + b.h / 2, 1.2);
+    // Stamp icon to the right of the box
+    iconStamp(b.x + b.w + 28, b.y + b.h / 2, 1.2);
 
     ctx.globalAlpha = 1;
 }
