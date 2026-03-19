@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chunk Retrieval – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconLaptop(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(x-12, y-10, 24, 16); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x-16, y+6); ctx.lineTo(x+16, y+6);
+    ctx.lineTo(x+16, y+10); ctx.lineTo(x-16, y+10);
+    ctx.closePath(); ctx.stroke();
+}
+
+function iconHexDouble(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI/3*i - Math.PI/6;
+            const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 14);
+    hex(x, y, 9);
+}
+
+function iconChunk(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    const w = 18, h = 22, fold = 6;
+    ctx.beginPath();
+    ctx.moveTo(x - w/2, y - h/2);
+    ctx.lineTo(x + w/2 - fold, y - h/2);
+    ctx.lineTo(x + w/2, y - h/2 + fold);
+    ctx.lineTo(x + w/2, y + h/2);
+    ctx.lineTo(x - w/2, y + h/2);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + w/2 - fold, y - h/2);
+    ctx.lineTo(x + w/2 - fold, y - h/2 + fold);
+    ctx.lineTo(x + w/2, y - h/2 + fold);
+    ctx.stroke();
+}
+
+// ── Easing helpers ──
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+// ── Animation state ──
+// Phases:
+// 0: request traveling forward (hop by hop)
+// 1: chunk traveling back (hop by hop)
+// 2: arrival highlight at requester
+// 3: pause before next cycle
+const HOP_DURATION = 0.45;    // seconds per hop
+const HIGHLIGHT_DURATION = 0.6;
+const PAUSE_DURATION = 0.8;
+
+let phase = 0;
+let phaseTime = 0;
+let currentHop = 0;
+const NUM_HOPS = 4; // requester -> node1 -> node2 -> node3 -> storer
+
+// Current chunk address (regenerated each cycle)
+let chunkAddr = rngHex(8);
+
+// ── Node positions ──
+// Zigzag path from left to right
+const centerY = 360;
+const nodePositions = [
+    { x: 140,  y: centerY },          // Requester
+    { x: 380,  y: centerY - 100 },    // Node 1
+    { x: 620,  y: centerY + 80 },     // Node 2
+    { x: 860,  y: centerY - 60 },     // Node 3
+    { x: 1100, y: centerY }           // Storer
+];
+
+const poLabels = ['', 'PO 1', 'PO 2', 'PO 3', 'PO 4'];
+
+const requester = { x: nodePositions[0].x, y: nodePositions[0].y, r: NODE_R, ir: INNER_R, icon: iconLaptop, label: 'Requester' };
+const node1     = { x: nodePositions[1].x, y: nodePositions[1].y, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const node2     = { x: nodePositions[2].x, y: nodePositions[2].y, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const node3     = { x: nodePositions[3].x, y: nodePositions[3].y, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const storer    = { x: nodePositions[4].x, y: nodePositions[4].y, r: NODE_R, ir: INNER_R, icon: iconHexDouble, label: 'Storer' };
+
+const allNodes = [requester, node1, node2, node3, storer];
+
+// Connection lines between consecutive nodes
+const connections = [
+    [requester, node1],
+    [node1, node2],
+    [node2, node3],
+    [node3, storer]
+];
+
+// Path as coordinate pairs for forward direction
+const forwardPath = nodePositions.map(n => [n.x, n.y]);
+// Reverse path for chunk return
+const reversePath = [...forwardPath].reverse();
+
+// ── Scene logic ──
+function drawLines() {
+    for (const [a, b] of connections) {
+        ln(a.x, a.y, b.x, b.y, 'rgba(255,255,255,0.4)', LINE_W);
+    }
+}
+
+// Draw a small arrow indicator along a line segment
+function drawArrow(fromX, fromY, toX, toY, progress, color) {
+    const dx = toX - fromX, dy = toY - fromY;
+    const len = Math.sqrt(dx*dx + dy*dy);
+    const nx = dx/len, ny = dy/len;
+    const px = fromX + dx * progress;
+    const py = fromY + dy * progress;
+    const arrowSize = 8;
+
+    ctx.beginPath();
+    ctx.moveTo(px + nx * arrowSize, py + ny * arrowSize);
+    ctx.lineTo(px - nx * arrowSize/2 - ny * arrowSize * 0.6, py - ny * arrowSize/2 + nx * arrowSize * 0.6);
+    ctx.lineTo(px - nx * arrowSize/2 + ny * arrowSize * 0.6, py - ny * arrowSize/2 - nx * arrowSize * 0.6);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+}
+
+// Draw the traveling packet (request or chunk)
+function drawPacket(hopIndex, hopProgress, isRequest) {
+    let path, segIndex;
+    if (isRequest) {
+        // Forward: hop 0 = requester->node1, hop 1 = node1->node2, etc.
+        segIndex = hopIndex;
+        const from = forwardPath[segIndex];
+        const to = forwardPath[segIndex + 1];
+        const t = easeInOut(hopProgress);
+        const px = from[0] + (to[0] - from[0]) * t;
+        const py = from[1] + (to[1] - from[1]) * t;
+
+        // Request packet: white with slight glow
+        ctx.save();
+        ctx.shadowColor = 'rgba(255,255,255,0.5)';
+        ctx.shadowBlur = 12;
+        ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI*2);
+        ctx.fillStyle = WHITE;
+        ctx.fill();
+        ctx.restore();
+
+        // Small label next to packet
+        const labelOffset = 16;
+        renderText('REQ', px, py - labelOffset, 'rgba(255,255,255,0.7)', 'bold 11px Arial, sans-serif', 'center', 'bottom');
+    } else {
+        // Backward: hop 0 = storer->node3, hop 1 = node3->node2, etc.
+        segIndex = hopIndex;
+        const from = reversePath[segIndex];
+        const to = reversePath[segIndex + 1];
+        const t = easeInOut(hopProgress);
+        const px = from[0] + (to[0] - from[0]) * t;
+        const py = from[1] + (to[1] - from[1]) * t;
+
+        // Chunk packet: orange with glow
+        ctx.save();
+        ctx.shadowColor = 'rgba(212,99,58,0.6)';
+        ctx.shadowBlur = 14;
+        ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI*2);
+        ctx.fillStyle = ORANGE;
+        ctx.fill();
+        ctx.restore();
+
+        renderText('CHUNK', px, py - 18, 'rgba(212,99,58,0.8)', 'bold 11px Arial, sans-serif', 'center', 'bottom');
+    }
+}
+
+// Draw highlight ring around a node
+function drawHighlight(node, alpha) {
+    ctx.save();
+    ctx.beginPath();
+    const r = (node.r || NODE_R) + 8;
+    ctx.arc(node.x, node.y, r, 0, Math.PI*2);
+    ctx.strokeStyle = `rgba(212,99,58,${alpha})`;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.restore();
+}
+
+// Highlight the active hop segment
+function drawActiveSegment(hopIndex, isRequest, alpha) {
+    let fromNode, toNode;
+    if (isRequest) {
+        fromNode = allNodes[hopIndex];
+        toNode = allNodes[hopIndex + 1];
+    } else {
+        fromNode = allNodes[NUM_HOPS - hopIndex];
+        toNode = allNodes[NUM_HOPS - hopIndex - 1];
+    }
+    // Draw brighter line for active segment
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(fromNode.x, fromNode.y);
+    ctx.lineTo(toNode.x, toNode.y);
+    const color = isRequest ? `rgba(255,255,255,${alpha * 0.6})` : `rgba(212,99,58,${alpha * 0.6})`;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+}
+
+// Draw PO labels above each relay/storer node
+function drawPOLabels() {
+    for (let i = 1; i < nodePositions.length; i++) {
+        const n = nodePositions[i];
+        const nodeObj = allNodes[i];
+        const r = nodeObj.r || NODE_R;
+        renderText(poLabels[i], n.x, n.y - r - 22,
+            'rgba(255,255,255,0.5)', 'bold 13px Arial, sans-serif', 'center', 'top');
+    }
+}
+
+// Draw chunk address near requester
+function drawChunkAddress() {
+    renderText('0x' + chunkAddr + '...', requester.x, requester.y + (requester.r) + 28,
+        'rgba(255,255,255,0.5)', 'bold 13px monospace', 'center', 'top');
+}
+
+// Draw direction labels
+function drawDirectionLabels() {
+    if (phase === 0) {
+        // Forward request arrow indicators
+        const alpha = 0.4;
+        renderText('Request \u2192', W/2, 80, `rgba(255,255,255,${alpha})`, 'bold 15px Arial, sans-serif', 'center', 'top');
+    } else if (phase === 1) {
+        const alpha = 0.4;
+        renderText('\u2190 Chunk response', W/2, 80, `rgba(212,99,58,${alpha})`, 'bold 15px Arial, sans-serif', 'center', 'top');
+    }
+}
+
+// Draw the chunk icon at the storer when waiting for request
+function drawStoredChunk() {
+    if (phase === 0 && currentHop < NUM_HOPS) {
+        // Show chunk icon near storer
+        const cx = storer.x, cy = storer.y - (storer.r || NODE_R) - 32;
+        iconChunk(cx, cy);
+        renderText('stored', cx, cy + 16, 'rgba(255,255,255,0.4)', 'bold 11px Arial, sans-serif', 'center', 'top');
+    }
+}
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Chunk Retrieval', W/2, 21);
+}
+
+// ── Main loop ──
+let lastTime = 0;
+
+function resetCycle() {
+    phase = 0;
+    phaseTime = 0;
+    currentHop = 0;
+    chunkAddr = rngHex(8);
+}
+
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+
+    phaseTime += dt;
+
+    // State machine
+    if (phase === 0) {
+        // Request traveling forward
+        const hopProgress = clamp01(phaseTime / HOP_DURATION);
+        if (phaseTime >= HOP_DURATION) {
+            currentHop++;
+            phaseTime -= HOP_DURATION;
+            if (currentHop >= NUM_HOPS) {
+                // Request arrived at storer, switch to response phase
+                phase = 1;
+                currentHop = 0;
+                phaseTime = 0;
+            }
+        }
+    } else if (phase === 1) {
+        // Chunk traveling back
+        const hopProgress = clamp01(phaseTime / HOP_DURATION);
+        if (phaseTime >= HOP_DURATION) {
+            currentHop++;
+            phaseTime -= HOP_DURATION;
+            if (currentHop >= NUM_HOPS) {
+                // Chunk arrived at requester
+                phase = 2;
+                phaseTime = 0;
+            }
+        }
+    } else if (phase === 2) {
+        // Highlight at requester
+        if (phaseTime >= HIGHLIGHT_DURATION) {
+            phase = 3;
+            phaseTime = 0;
+        }
+    } else if (phase === 3) {
+        // Pause
+        if (phaseTime >= PAUSE_DURATION) {
+            resetCycle();
+        }
+    }
+
+    // 1. prerender
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+    drawLines();
+    drawPOLabels();
+    drawChunkAddress();
+    drawDirectionLabels();
+    drawStoredChunk();
+
+    // 2. render animated elements
+    if (phase === 0) {
+        const hopProgress = clamp01(phaseTime / HOP_DURATION);
+        drawActiveSegment(currentHop, true, 0.8);
+        drawPacket(currentHop, hopProgress, true);
+
+        // Highlight the node that just forwarded (previous hop destination)
+        if (currentHop > 0) {
+            drawHighlight(allNodes[currentHop], 0.5);
+        }
+    } else if (phase === 1) {
+        const hopProgress = clamp01(phaseTime / HOP_DURATION);
+        drawActiveSegment(currentHop, false, 0.8);
+        drawPacket(currentHop, hopProgress, false);
+
+        // Highlight the node that just forwarded chunk
+        if (currentHop > 0) {
+            const nodeIdx = NUM_HOPS - currentHop;
+            drawHighlight(allNodes[nodeIdx], 0.5);
+        }
+    } else if (phase === 2) {
+        // Highlight requester with fading pulse
+        const alpha = 1.0 - easeOut(clamp01(phaseTime / HIGHLIGHT_DURATION));
+        drawHighlight(requester, alpha);
+
+        // Show a brief "received" indicator
+        const fadeAlpha = 1.0 - clamp01(phaseTime / HIGHLIGHT_DURATION);
+        renderText('Chunk received', requester.x, requester.y - (requester.r) - 30,
+            `rgba(212,99,58,${fadeAlpha})`, 'bold 14px Arial, sans-serif', 'center', 'top');
+    }
+
+    // Draw faint path trace showing the route
+    if (phase === 0 || phase === 1) {
+        // Show completed hops as faint trail
+        if (phase === 0) {
+            for (let i = 0; i < currentHop; i++) {
+                const from = forwardPath[i], to = forwardPath[i+1];
+                ctx.save();
+                ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(to[0], to[1]);
+                ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 2;
+                ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
+                ctx.restore();
+            }
+        } else {
+            for (let i = 0; i < currentHop; i++) {
+                const from = reversePath[i], to = reversePath[i+1];
+                ctx.save();
+                ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(to[0], to[1]);
+                ctx.strokeStyle = 'rgba(212,99,58,0.2)'; ctx.lineWidth = 2;
+                ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
+                ctx.restore();
+            }
+        }
+    }
+
+    // 3. postrender — nodes on top
+    for (const n of allNodes) {
+        shell(n.x, n.y, n.r, n.ir);
+        n.icon(n.x, n.y);
+        renderText(n.label, n.x, n.y + (n.r || NODE_R) + 6, WHITE, FONT, 'center', 'top');
+    }
+
+    // Explanatory text
+    renderText(
+        'Requests are forwarded via Kademlia routing to the closest node, which returns the chunk along the same path.',
+        W/2, H - 28, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top'
+    );
+
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

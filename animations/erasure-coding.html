@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Erasure Coding – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Chunk colors
+const DATA_COLOR = '#ffffff';
+const DATA_DIM = 'rgba(255,255,255,0.85)';
+const PARITY_COLOR = 'rgba(255,255,255,0.5)';
+const LOST_COLOR = '#cc3333';
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconImage(x, y, scale) {
+    scale = scale || 1;
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    const w = 22 * scale, h = 18 * scale;
+    ctx.beginPath(); ctx.rect(x - w/2, y - h/2, w, h); ctx.stroke();
+    // Mountain
+    ctx.beginPath();
+    ctx.moveTo(x - w/2 + 3*scale, y + h/2 - 3*scale);
+    ctx.lineTo(x - 2*scale, y - h/2 + 5*scale);
+    ctx.lineTo(x + 4*scale, y + h/2 - 3*scale);
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 1.5; ctx.stroke();
+    // Sun
+    ctx.beginPath(); ctx.arc(x + w/2 - 6*scale, y - h/2 + 6*scale, 3*scale, 0, Math.PI*2);
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 1.5; ctx.stroke();
+}
+
+function iconHexDouble(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI / 3 * i - Math.PI / 6;
+            const px = cx + r * Math.cos(a), py = cy + r * Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 14);
+    hex(x, y, 9);
+}
+
+function iconChunk(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    const w = 16, h = 20;
+    ctx.beginPath();
+    ctx.moveTo(x - w/2, y - h/2);
+    ctx.lineTo(x + w/2 - 5, y - h/2);
+    ctx.lineTo(x + w/2, y - h/2 + 5);
+    ctx.lineTo(x + w/2, y + h/2);
+    ctx.lineTo(x - w/2, y + h/2);
+    ctx.closePath();
+    ctx.stroke();
+    // Fold
+    ctx.beginPath();
+    ctx.moveTo(x + w/2 - 5, y - h/2);
+    ctx.lineTo(x + w/2 - 5, y - h/2 + 5);
+    ctx.lineTo(x + w/2, y - h/2 + 5);
+    ctx.stroke();
+}
+
+// ── Easing helpers ──
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+// ── Animation state ──
+const SMALL_R = 22, SMALL_IR = 15;
+
+// Phases and timing (in seconds)
+const PHASE = {
+    FILE_APPEAR: 0,       // 0-1s: file fades in
+    SPLIT_DATA: 1.0,      // 1-2.5s: file splits into 4 data chunks
+    GEN_PARITY: 2.5,      // 2.5-4s: parity chunks generated
+    SPREAD: 4.0,          // 4-6s: all 8 chunks travel to storage nodes
+    HOLD_FULL: 6.0,       // 6-7s: hold showing all stored
+    LOSS: 7.0,            // 7-8.5s: 3 chunks turn red and fade
+    HOLD_LOSS: 8.5,       // 8.5-9.5s: hold showing loss
+    RETRIEVE: 9.5,        // 9.5-11.5s: surviving chunks travel back
+    RECONSTRUCT: 11.5,    // 11.5-13s: file reconstructs
+    HOLD_END: 13.0,       // 13-14.5s: hold final
+    FADE_OUT: 14.5,       // 14.5-15.5s: fade out everything
+    TOTAL: 15.5
+};
+
+let elapsed = 0;
+
+// Which chunks are lost (indices into all 8 chunks: 0-3 data, 4-7 parity)
+const LOST_INDICES = [1, 4, 6]; // D2, P1, P3
+
+// ── Node positions ──
+// File position (left)
+const FILE_X = 120, FILE_Y = 340;
+
+// Chunk staging area (center-left)
+const CHUNK_STAGE_X = 360;
+const DATA_Y_START = 200, PARITY_Y_START = 390;
+const CHUNK_SPACING_Y = 70;
+
+// Storage nodes (center-right), 2 columns x 4 rows
+const STORE_X1 = 780, STORE_X2 = 980;
+const STORE_Y_START = 140, STORE_Y_SPACING = 130;
+
+const storeNodes = [];
+for (let i = 0; i < 8; i++) {
+    const col = i < 4 ? 0 : 1;
+    const row = i < 4 ? i : i - 4;
+    storeNodes.push({
+        x: col === 0 ? STORE_X1 : STORE_X2,
+        y: STORE_Y_START + row * STORE_Y_SPACING,
+        label: 'Node ' + (i + 1)
+    });
+}
+
+// Chunk definitions
+const chunks = [];
+for (let i = 0; i < 4; i++) {
+    chunks.push({
+        label: 'D' + (i + 1),
+        isParity: false,
+        stageX: CHUNK_STAGE_X,
+        stageY: DATA_Y_START + i * CHUNK_SPACING_Y,
+        storeIdx: i,
+        lost: LOST_INDICES.includes(i),
+        hash: rngHex(6)
+    });
+}
+for (let i = 0; i < 4; i++) {
+    chunks.push({
+        label: 'P' + (i + 1),
+        isParity: true,
+        stageX: CHUNK_STAGE_X,
+        stageY: PARITY_Y_START + i * CHUNK_SPACING_Y,
+        storeIdx: i + 4,
+        lost: LOST_INDICES.includes(i + 4),
+        hash: rngHex(6)
+    });
+}
+
+// Reconstruct position (same as file)
+const RECON_X = FILE_X, RECON_Y = FILE_Y;
+
+// ── Scene logic ──
+
+function phaseT(phase, duration) {
+    return clamp01((elapsed - phase) / duration);
+}
+
+function drawChunkIcon(x, y, label, color, alpha) {
+    ctx.globalAlpha = alpha;
+    // Draw a small document icon
+    const w = 28, h = 34;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - w/2, y - h/2);
+    ctx.lineTo(x + w/2 - 7, y - h/2);
+    ctx.lineTo(x + w/2, y - h/2 + 7);
+    ctx.lineTo(x + w/2, y + h/2);
+    ctx.lineTo(x - w/2, y + h/2);
+    ctx.closePath();
+    ctx.stroke();
+    // Fold
+    ctx.beginPath();
+    ctx.moveTo(x + w/2 - 7, y - h/2);
+    ctx.lineTo(x + w/2 - 7, y - h/2 + 7);
+    ctx.lineTo(x + w/2, y - h/2 + 7);
+    ctx.stroke();
+    // Label inside
+    ctx.fillStyle = color;
+    ctx.font = 'bold 13px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x, y + 3);
+    ctx.globalAlpha = 1;
+}
+
+function drawFileIcon(x, y, alpha, scale) {
+    ctx.globalAlpha = alpha;
+    scale = scale || 1;
+    const w = 50 * scale, h = 60 * scale;
+    ctx.strokeStyle = WHITE;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(x - w/2, y - h/2);
+    ctx.lineTo(x + w/2 - 12*scale, y - h/2);
+    ctx.lineTo(x + w/2, y - h/2 + 12*scale);
+    ctx.lineTo(x + w/2, y + h/2);
+    ctx.lineTo(x - w/2, y + h/2);
+    ctx.closePath();
+    ctx.stroke();
+    // Fold
+    ctx.beginPath();
+    ctx.moveTo(x + w/2 - 12*scale, y - h/2);
+    ctx.lineTo(x + w/2 - 12*scale, y - h/2 + 12*scale);
+    ctx.lineTo(x + w/2, y - h/2 + 12*scale);
+    ctx.stroke();
+    // Content lines
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+        const ly = y - h/4 + i * 12 * scale;
+        const lw = (w - 20*scale) * (i === 2 ? 0.6 : 1);
+        ctx.beginPath();
+        ctx.moveTo(x - w/2 + 8*scale, ly);
+        ctx.lineTo(x - w/2 + 8*scale + lw, ly);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+}
+
+function getChunkColor(chunk, forLoss) {
+    if (forLoss && chunk.lost) return LOST_COLOR;
+    return chunk.isParity ? PARITY_COLOR : DATA_COLOR;
+}
+
+function drawScene() {
+    const phase = elapsed;
+
+    // ── Phase 1: File appears ──
+    if (phase < PHASE.SPLIT_DATA) {
+        const t = easeOut(phaseT(PHASE.FILE_APPEAR, 1.0));
+        drawFileIcon(FILE_X, FILE_Y, t);
+        renderText('Original File', FILE_X, FILE_Y + 42, `rgba(255,255,255,${t})`, 'bold 15px Arial, sans-serif');
+    }
+
+    // ── Phase 2: Split into data chunks ──
+    if (phase >= PHASE.SPLIT_DATA && phase < PHASE.GEN_PARITY) {
+        const t = easeOut(phaseT(PHASE.SPLIT_DATA, 1.2));
+        // File fades
+        drawFileIcon(FILE_X, FILE_Y, 1 - t * 0.7);
+        renderText('Original File', FILE_X, FILE_Y + 42, `rgba(255,255,255,${1 - t * 0.7})`, 'bold 15px Arial, sans-serif');
+
+        // Data chunks appear one by one
+        for (let i = 0; i < 4; i++) {
+            const chunkT = clamp01((t - i * 0.15) / 0.4);
+            if (chunkT > 0) {
+                const c = chunks[i];
+                const cx = lerp(FILE_X, c.stageX, easeOut(chunkT));
+                const cy = lerp(FILE_Y, c.stageY, easeOut(chunkT));
+                drawChunkIcon(cx, cy, c.label, DATA_COLOR, chunkT);
+            }
+        }
+
+        // Section label
+        if (t > 0.3) {
+            renderText('Data Chunks', CHUNK_STAGE_X, DATA_Y_START - 40, `rgba(255,255,255,${clamp01((t - 0.3) / 0.3)})`, 'bold 15px Arial, sans-serif');
+        }
+    }
+
+    // ── Phase 3: Generate parity chunks ──
+    if (phase >= PHASE.GEN_PARITY && phase < PHASE.SPREAD) {
+        // File stays dimmed
+        drawFileIcon(FILE_X, FILE_Y, 0.3);
+
+        // Data chunks stay
+        for (let i = 0; i < 4; i++) {
+            drawChunkIcon(chunks[i].stageX, chunks[i].stageY, chunks[i].label, DATA_COLOR, 1);
+        }
+        renderText('Data Chunks', CHUNK_STAGE_X, DATA_Y_START - 40, WHITE, 'bold 15px Arial, sans-serif');
+
+        const t = easeOut(phaseT(PHASE.GEN_PARITY, 1.2));
+
+        // Parity chunks appear with a "generation" effect
+        for (let i = 0; i < 4; i++) {
+            const chunkT = clamp01((t - i * 0.15) / 0.4);
+            if (chunkT > 0) {
+                const c = chunks[i + 4];
+                drawChunkIcon(c.stageX, c.stageY, c.label, PARITY_COLOR, chunkT);
+
+                // Draw connection lines from data to parity during generation
+                if (chunkT < 1) {
+                    ctx.globalAlpha = (1 - chunkT) * 0.4;
+                    for (let j = 0; j < 4; j++) {
+                        ln(chunks[j].stageX, chunks[j].stageY, c.stageX, c.stageY, ORANGE, 1);
+                    }
+                    ctx.globalAlpha = 1;
+                }
+            }
+        }
+
+        // Section labels
+        if (t > 0.3) {
+            renderText('Parity Chunks', CHUNK_STAGE_X, PARITY_Y_START - 40, `rgba(255,255,255,${clamp01((t - 0.3) / 0.3) * 0.7})`, 'bold 15px Arial, sans-serif');
+            renderText('(Reed-Solomon)', CHUNK_STAGE_X, PARITY_Y_START - 22, `rgba(255,255,255,${clamp01((t - 0.3) / 0.3) * 0.4})`, '13px Arial, sans-serif');
+        }
+    }
+
+    // ── Phase 4: Spread to storage nodes ──
+    if (phase >= PHASE.SPREAD && phase < PHASE.HOLD_FULL) {
+        const t = easeInOut(phaseT(PHASE.SPREAD, 1.8));
+
+        // File fades out fully
+        drawFileIcon(FILE_X, FILE_Y, 0.3 * (1 - t));
+
+        for (let i = 0; i < 8; i++) {
+            const c = chunks[i];
+            const node = storeNodes[c.storeIdx];
+            const chunkT = clamp01((t - i * 0.05) / 0.6);
+            const et = easeOut(chunkT);
+
+            const cx = lerp(c.stageX, node.x, et);
+            const cy = lerp(c.stageY, node.y, et);
+            const color = c.isParity ? PARITY_COLOR : DATA_COLOR;
+
+            // Draw travel line
+            if (chunkT > 0 && chunkT < 1) {
+                ctx.globalAlpha = 0.3 * (1 - chunkT);
+                ln(c.stageX, c.stageY, node.x, node.y, color, 1);
+                ctx.globalAlpha = 1;
+            }
+
+            drawChunkIcon(cx, cy, c.label, color, 1);
+        }
+
+        // Labels fade out
+        const fadeLabels = 1 - clamp01(t / 0.3);
+        if (fadeLabels > 0) {
+            renderText('Data Chunks', CHUNK_STAGE_X, DATA_Y_START - 40, `rgba(255,255,255,${fadeLabels})`, 'bold 15px Arial, sans-serif');
+            renderText('Parity Chunks', CHUNK_STAGE_X, PARITY_Y_START - 40, `rgba(255,255,255,${fadeLabels * 0.7})`, 'bold 15px Arial, sans-serif');
+        }
+    }
+
+    // ── Phase 5: Hold with all stored ──
+    if (phase >= PHASE.HOLD_FULL && phase < PHASE.LOSS) {
+        // All chunks at their storage nodes
+        for (let i = 0; i < 8; i++) {
+            const c = chunks[i];
+            const node = storeNodes[c.storeIdx];
+            const color = c.isParity ? PARITY_COLOR : DATA_COLOR;
+            drawChunkIcon(node.x, node.y, c.label, color, 1);
+        }
+
+        // Status text
+        renderText('All 8 chunks stored across the network', W/2, H - 80, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif');
+    }
+
+    // ── Phase 6: Chunk loss ──
+    if (phase >= PHASE.LOSS && phase < PHASE.HOLD_LOSS) {
+        const t = phaseT(PHASE.LOSS, 1.5);
+
+        for (let i = 0; i < 8; i++) {
+            const c = chunks[i];
+            const node = storeNodes[c.storeIdx];
+
+            if (c.lost) {
+                // Turn red then fade
+                const redT = clamp01(t / 0.4);
+                const fadeT = clamp01((t - 0.4) / 0.6);
+                const alpha = 1 - fadeT;
+
+                if (alpha > 0) {
+                    // Interpolate color from original to red
+                    const origColor = c.isParity ? PARITY_COLOR : DATA_COLOR;
+                    const color = redT < 1 ? origColor : LOST_COLOR;
+                    drawChunkIcon(node.x, node.y, c.label, color, alpha);
+
+                    // Red X over lost chunk
+                    if (redT > 0.5) {
+                        ctx.globalAlpha = alpha * clamp01((redT - 0.5) / 0.5);
+                        ctx.strokeStyle = LOST_COLOR;
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        ctx.moveTo(node.x - 12, node.y - 12);
+                        ctx.lineTo(node.x + 12, node.y + 12);
+                        ctx.moveTo(node.x + 12, node.y - 12);
+                        ctx.lineTo(node.x - 12, node.y + 12);
+                        ctx.stroke();
+                        ctx.globalAlpha = 1;
+                    }
+                }
+            } else {
+                const color = c.isParity ? PARITY_COLOR : DATA_COLOR;
+                drawChunkIcon(node.x, node.y, c.label, color, 1);
+            }
+        }
+
+        // Status
+        if (t > 0.3) {
+            renderText('3 nodes go offline — chunks D2, P1, P3 are lost', W/2, H - 80, `rgba(204,51,51,${clamp01((t - 0.3) / 0.3)})`, 'bold 15px Arial, sans-serif');
+        }
+    }
+
+    // ── Phase 7: Hold with loss ──
+    if (phase >= PHASE.HOLD_LOSS && phase < PHASE.RETRIEVE) {
+        for (let i = 0; i < 8; i++) {
+            const c = chunks[i];
+            const node = storeNodes[c.storeIdx];
+            if (!c.lost) {
+                const color = c.isParity ? PARITY_COLOR : DATA_COLOR;
+                drawChunkIcon(node.x, node.y, c.label, color, 1);
+            }
+        }
+
+        renderText('5 chunks remain — only 4 needed to reconstruct', W/2, H - 80, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif');
+    }
+
+    // ── Phase 8: Retrieve surviving chunks ──
+    if (phase >= PHASE.RETRIEVE && phase < PHASE.RECONSTRUCT) {
+        const t = easeInOut(phaseT(PHASE.RETRIEVE, 2.0));
+
+        // Surviving chunks travel back toward file position
+        const surviving = chunks.filter(c => !c.lost);
+        const fanPositions = [];
+        const fanSpacing = 50;
+        const fanBaseY = FILE_Y - ((surviving.length - 1) * fanSpacing) / 2;
+        for (let i = 0; i < surviving.length; i++) {
+            fanPositions.push({ x: CHUNK_STAGE_X, y: fanBaseY + i * fanSpacing });
+        }
+
+        for (let si = 0; si < surviving.length; si++) {
+            const c = surviving[si];
+            const node = storeNodes[c.storeIdx];
+            const dest = fanPositions[si];
+            const chunkT = clamp01((t - si * 0.05) / 0.7);
+            const et = easeOut(chunkT);
+
+            const cx = lerp(node.x, dest.x, et);
+            const cy = lerp(node.y, dest.y, et);
+            const color = c.isParity ? PARITY_COLOR : DATA_COLOR;
+
+            // Travel line
+            if (chunkT > 0 && chunkT < 1) {
+                ctx.globalAlpha = 0.2;
+                ln(node.x, node.y, dest.x, dest.y, ORANGE, 1);
+                ctx.globalAlpha = 1;
+            }
+
+            drawChunkIcon(cx, cy, c.label, color, 1);
+        }
+
+        // Status
+        renderText('Retrieving surviving chunks...', W/2, H - 80, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif');
+    }
+
+    // ── Phase 9: Reconstruct ──
+    if (phase >= PHASE.RECONSTRUCT && phase < PHASE.HOLD_END) {
+        const t = easeOut(phaseT(PHASE.RECONSTRUCT, 1.5));
+
+        // Show surviving chunks converging to file
+        const surviving = chunks.filter(c => !c.lost);
+        const fanSpacing = 50;
+        const fanBaseY = FILE_Y - ((surviving.length - 1) * fanSpacing) / 2;
+
+        for (let si = 0; si < surviving.length; si++) {
+            const c = surviving[si];
+            const stagePos = { x: CHUNK_STAGE_X, y: fanBaseY + si * fanSpacing };
+
+            const cx = lerp(stagePos.x, FILE_X, t);
+            const cy = lerp(stagePos.y, FILE_Y, t);
+            const color = c.isParity ? PARITY_COLOR : DATA_COLOR;
+            const alpha = 1 - t * 0.8;
+
+            if (alpha > 0) {
+                drawChunkIcon(cx, cy, c.label, color, alpha);
+            }
+        }
+
+        // File reappears
+        drawFileIcon(FILE_X, FILE_Y, t);
+        if (t > 0.5) {
+            renderText('Original File', FILE_X, FILE_Y + 42, `rgba(255,255,255,${(t - 0.5) * 2})`, 'bold 15px Arial, sans-serif');
+        }
+
+        // Reconstruction label
+        renderText('File reconstructed from 5 of 8 chunks', W/2, H - 80, `rgba(255,255,255,${t * 0.6})`, 'bold 15px Arial, sans-serif');
+    }
+
+    // ── Phase 10: Hold end ──
+    if (phase >= PHASE.HOLD_END && phase < PHASE.FADE_OUT) {
+        drawFileIcon(FILE_X, FILE_Y, 1);
+        renderText('Original File', FILE_X, FILE_Y + 42, WHITE, 'bold 15px Arial, sans-serif');
+        renderText('File reconstructed from 5 of 8 chunks', W/2, H - 80, 'rgba(255,255,255,0.6)', 'bold 15px Arial, sans-serif');
+    }
+
+    // ── Phase 11: Fade out ──
+    if (phase >= PHASE.FADE_OUT) {
+        const t = phaseT(PHASE.FADE_OUT, 1.0);
+        const alpha = 1 - t;
+        drawFileIcon(FILE_X, FILE_Y, alpha);
+        renderText('Original File', FILE_X, FILE_Y + 42, `rgba(255,255,255,${alpha})`, 'bold 15px Arial, sans-serif');
+    }
+
+    // ── Draw storage nodes (always on top) ──
+    for (let i = 0; i < 8; i++) {
+        const node = storeNodes[i];
+        const c = chunks[i];
+
+        // During/after loss phase, lost nodes dim
+        let nodeAlpha = 1;
+        if (phase >= PHASE.LOSS && c.lost) {
+            const lossT = phaseT(PHASE.LOSS, 1.5);
+            const fadeT = clamp01((lossT - 0.4) / 0.6);
+            nodeAlpha = 1 - fadeT * 0.6;
+        }
+
+        ctx.globalAlpha = nodeAlpha;
+        shell(node.x, node.y, 34, 24);
+        iconHexDouble(node.x, node.y);
+        renderText(node.label, node.x, node.y + 40, WHITE, 'bold 13px Arial, sans-serif');
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Erasure Coding', W/2, 21);
+}
+
+// ── Main loop ──
+let lastTime = 0;
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+
+    elapsed += dt;
+    if (elapsed > PHASE.TOTAL) {
+        elapsed = 0;
+        seed = 42; // Reset RNG for deterministic loop
+    }
+
+    // 1. prerender
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+
+    // 2. render scene
+    drawScene();
+
+    // 3. Bottom explanatory text (persistent)
+    renderText(
+        'Parity chunks enable file reconstruction even when some chunks are lost from the network.',
+        W/2, H - 40,
+        'rgba(255,255,255,0.6)',
+        '15px Arial, sans-serif'
+    );
+
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

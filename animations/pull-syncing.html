@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pull Syncing – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconHexDouble(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI/3*i - Math.PI/6;
+            const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 14);
+    hex(x, y, 9);
+}
+
+function iconHexDoubleSmall(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI/3*i - Math.PI/6;
+            const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 11);
+    hex(x, y, 7);
+}
+
+// ── Easing helpers ──
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+// ── Animation state ──
+const SMALL_R = 34, SMALL_IR = 24;
+const CENTER_X = 440, CENTER_Y = 360;
+const PEER_RADIUS = 220;
+const NUM_PEERS = 6;
+const NUM_CHUNKS = 5; // chunks to sync
+const STORE_SLOTS = 8; // total store slots
+
+// Timing (seconds)
+const PHASE_CHECK = 1.2;      // central node pulse/check
+const PHASE_REQUEST = 0.8;    // request travels to peer
+const PHASE_RESPONSE = 0.8;   // chunk travels back
+const PHASE_ABSORB = 0.4;     // chunk absorbed into store
+const PHASE_GAP = 0.3;        // gap between chunks
+const CYCLE_PAUSE = 3.0;      // pause before reset
+
+// Pre-generate chunk hashes
+const chunkHashes = [];
+for (let i = 0; i < STORE_SLOTS; i++) chunkHashes.push(rngHex(8));
+
+// Which slots are initially filled (deterministic)
+const initialFilled = [0, 2, 5]; // 3 of 8 already present
+// Which slots will be filled by syncing (in order)
+const syncSlots = [1, 3, 4, 6, 7]; // 5 chunks to pull
+
+// Which peer provides each chunk (cycle through peers)
+const peerForChunk = [];
+for (let i = 0; i < NUM_CHUNKS; i++) peerForChunk.push(i % NUM_PEERS);
+
+// ── Node positions ──
+const peers = [];
+for (let i = 0; i < NUM_PEERS; i++) {
+    const angle = -Math.PI/2 + (i / (NUM_PEERS - 1)) * Math.PI; // semicircle from top to bottom on left side
+    // Actually, let's do a full ring around center
+    const a = -Math.PI/2 + (i / NUM_PEERS) * Math.PI * 2;
+    peers.push({
+        x: CENTER_X + PEER_RADIUS * Math.cos(a),
+        y: CENTER_Y + PEER_RADIUS * Math.sin(a),
+        label: 'Peer ' + (i + 1)
+    });
+}
+
+// ── Store visualization ──
+const STORE_X = 720; // store grid starts here
+const STORE_Y = 200;
+const SLOT_W = 120, SLOT_H = 32, SLOT_GAP = 6;
+
+// ── Scene logic ──
+let elapsed = 0;
+let currentChunk = -1; // -1 = checking phase
+let chunkPhase = 'check'; // check, request, response, absorb, gap
+let phaseTime = 0;
+let filledSlots = new Set(initialFilled);
+let cycleComplete = false;
+let cycleTimer = 0;
+
+function resetCycle() {
+    elapsed = 0;
+    currentChunk = -1;
+    chunkPhase = 'check';
+    phaseTime = 0;
+    filledSlots = new Set(initialFilled);
+    cycleComplete = false;
+    cycleTimer = 0;
+}
+
+function getPhaseDuration() {
+    if (chunkPhase === 'check') return PHASE_CHECK;
+    if (chunkPhase === 'request') return PHASE_REQUEST;
+    if (chunkPhase === 'response') return PHASE_RESPONSE;
+    if (chunkPhase === 'absorb') return PHASE_ABSORB;
+    if (chunkPhase === 'gap') return PHASE_GAP;
+    return 1;
+}
+
+function advancePhase() {
+    if (chunkPhase === 'check') {
+        currentChunk = 0;
+        chunkPhase = 'request';
+    } else if (chunkPhase === 'request') {
+        chunkPhase = 'response';
+    } else if (chunkPhase === 'response') {
+        chunkPhase = 'absorb';
+    } else if (chunkPhase === 'absorb') {
+        filledSlots.add(syncSlots[currentChunk]);
+        if (currentChunk < NUM_CHUNKS - 1) {
+            chunkPhase = 'gap';
+        } else {
+            cycleComplete = true;
+            cycleTimer = 0;
+        }
+    } else if (chunkPhase === 'gap') {
+        currentChunk++;
+        chunkPhase = 'request';
+    }
+    phaseTime = 0;
+}
+
+// ── Draw helpers ──
+
+function drawDashedLine(x1, y1, x2, y2, color, width) {
+    ctx.beginPath();
+    ctx.setLineDash([6, 4]);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.strokeStyle = color || WHITE;
+    ctx.lineWidth = width || LINE_W;
+    ctx.stroke();
+    ctx.setLineDash([]);
+}
+
+function drawLines() {
+    for (let i = 0; i < NUM_PEERS; i++) {
+        const p = peers[i];
+        drawDashedLine(CENTER_X, CENTER_Y, p.x, p.y, 'rgba(255,255,255,0.25)', LINE_W);
+    }
+}
+
+function drawStore() {
+    // Title
+    renderText('Local Store', STORE_X + SLOT_W/2, STORE_Y - 34, WHITE, 'bold 18px Arial, sans-serif', 'center', 'top');
+
+    for (let i = 0; i < STORE_SLOTS; i++) {
+        const sx = STORE_X;
+        const sy = STORE_Y + i * (SLOT_H + SLOT_GAP);
+        const filled = filledSlots.has(i);
+
+        // Slot being absorbed right now
+        let absorbing = false;
+        if (chunkPhase === 'absorb' && currentChunk >= 0 && syncSlots[currentChunk] === i) {
+            absorbing = true;
+        }
+
+        // Background
+        if (filled || absorbing) {
+            const alpha = absorbing ? easeOut(clamp01(phaseTime / PHASE_ABSORB)) : 1;
+            ctx.fillStyle = `rgba(212, 99, 58, ${alpha * 0.5})`;
+            ctx.fillRect(sx, sy, SLOT_W, SLOT_H);
+        }
+
+        // Border
+        ctx.strokeStyle = filled || absorbing ? ORANGE : 'rgba(255,255,255,0.2)';
+        ctx.lineWidth = filled || absorbing ? 2 : 1;
+        ctx.strokeRect(sx, sy, SLOT_W, SLOT_H);
+
+        // Hash label
+        if (filled || absorbing) {
+            const textAlpha = absorbing ? easeOut(clamp01(phaseTime / PHASE_ABSORB)) : 1;
+            renderText(chunkHashes[i], sx + SLOT_W/2, sy + 8,
+                `rgba(255,255,255,${textAlpha})`, 'bold 13px monospace', 'center', 'top');
+        } else {
+            // Show gap indicator
+            renderText('---', sx + SLOT_W/2, sy + 8,
+                'rgba(255,255,255,0.2)', 'bold 13px monospace', 'center', 'top');
+        }
+    }
+}
+
+function drawRequestPacket(fromX, fromY, toX, toY, progress) {
+    const t = easeInOut(clamp01(progress));
+    const x = fromX + (toX - fromX) * t;
+    const y = fromY + (toY - fromY) * t;
+
+    // Small white circle = request
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = WHITE;
+    ctx.fill();
+
+    // Glow
+    ctx.beginPath();
+    ctx.arc(x, y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fill();
+}
+
+function drawResponseChunk(fromX, fromY, toX, toY, progress) {
+    const t = easeInOut(clamp01(progress));
+    const x = fromX + (toX - fromX) * t;
+    const y = fromY + (toY - fromY) * t;
+
+    // Orange chunk circle
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI * 2);
+    ctx.fillStyle = ORANGE;
+    ctx.fill();
+    ctx.strokeStyle = WHITE;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+}
+
+function drawCenterPulse() {
+    if (chunkPhase !== 'check') return;
+    const t = clamp01(phaseTime / PHASE_CHECK);
+    const pulseR = NODE_R + 12 + 18 * Math.sin(t * Math.PI * 2);
+    const alpha = 0.15 + 0.15 * Math.sin(t * Math.PI * 2);
+    ctx.beginPath();
+    ctx.arc(CENTER_X, CENTER_Y, pulseR, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(212, 99, 58, ${alpha})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+}
+
+function highlightActivePeer() {
+    if (currentChunk < 0) return;
+    if (chunkPhase !== 'request' && chunkPhase !== 'response') return;
+    const pi = peerForChunk[currentChunk];
+    const p = peers[pi];
+
+    // Highlight the connection line
+    ln(CENTER_X, CENTER_Y, p.x, p.y, 'rgba(255,255,255,0.5)', 2);
+}
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Pull Syncing', W/2, 21);
+}
+
+// ── Main loop ──
+let lastTime = 0;
+
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+
+    // ── Update ──
+    if (cycleComplete) {
+        cycleTimer += dt;
+        if (cycleTimer >= CYCLE_PAUSE) {
+            resetCycle();
+        }
+    } else {
+        phaseTime += dt;
+        if (phaseTime >= getPhaseDuration()) {
+            advancePhase();
+        }
+    }
+
+    // ── 1. Prerender ──
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+    drawLines();
+    highlightActivePeer();
+
+    // ── 2. Render animated elements ──
+    drawCenterPulse();
+
+    // Draw request/response packets
+    if (currentChunk >= 0 && !cycleComplete) {
+        const pi = peerForChunk[currentChunk];
+        const p = peers[pi];
+
+        if (chunkPhase === 'request') {
+            const progress = phaseTime / PHASE_REQUEST;
+            drawRequestPacket(CENTER_X, CENTER_Y, p.x, p.y, progress);
+        } else if (chunkPhase === 'response') {
+            const progress = phaseTime / PHASE_RESPONSE;
+            drawResponseChunk(p.x, p.y, CENTER_X, CENTER_Y, progress);
+        }
+    }
+
+    // ── 3. Postrender — nodes on top ──
+
+    // Draw store
+    drawStore();
+
+    // Connecting line from center node to store
+    ln(CENTER_X + NODE_R + 4, CENTER_Y, STORE_X - 10, CENTER_Y, 'rgba(255,255,255,0.3)', LINE_W);
+
+    // Draw peer nodes
+    for (let i = 0; i < NUM_PEERS; i++) {
+        const p = peers[i];
+        shell(p.x, p.y, SMALL_R, SMALL_IR);
+        iconHexDoubleSmall(p.x, p.y);
+        renderText(p.label, p.x, p.y + SMALL_R + 6, WHITE, 'bold 14px Arial, sans-serif', 'center', 'top');
+    }
+
+    // Draw central syncing node
+    shell(CENTER_X, CENTER_Y, NODE_R, INNER_R);
+    iconHexDouble(CENTER_X, CENTER_Y);
+    renderText('Syncing Node', CENTER_X, CENTER_Y + NODE_R + 6, WHITE, FONT, 'center', 'top');
+
+    // Status text under syncing node
+    let statusText = '';
+    if (chunkPhase === 'check') {
+        statusText = 'Checking local store...';
+    } else if (chunkPhase === 'request') {
+        statusText = 'Requesting chunk ' + chunkHashes[syncSlots[currentChunk]].slice(0, 8) + '...';
+    } else if (chunkPhase === 'response') {
+        statusText = 'Receiving chunk...';
+    } else if (chunkPhase === 'absorb') {
+        statusText = 'Storing chunk';
+    } else if (chunkPhase === 'gap') {
+        statusText = '';
+    }
+    if (cycleComplete) {
+        statusText = 'Store complete';
+    }
+    if (statusText) {
+        renderText(statusText, CENTER_X, CENTER_Y + NODE_R + 28,
+            'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top');
+    }
+
+    // Bottom explanatory text
+    renderText('Nodes request missing chunks from peers to fill gaps in their local store.',
+        W/2, H - 30, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top');
+
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

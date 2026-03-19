@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACT Access Control – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconLaptop(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(x-12, y-10, 24, 16); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x-16, y+6); ctx.lineTo(x+16, y+6);
+    ctx.lineTo(x+16, y+10); ctx.lineTo(x-16, y+10);
+    ctx.closePath(); ctx.stroke();
+}
+
+function iconImage(x, y, scale) {
+    const s = scale || 1;
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(x - 14*s, y - 12*s, 28*s, 24*s);
+    ctx.stroke();
+    // Mountain
+    ctx.beginPath();
+    ctx.moveTo(x - 10*s, y + 8*s);
+    ctx.lineTo(x - 2*s, y - 2*s);
+    ctx.lineTo(x + 4*s, y + 4*s);
+    ctx.lineTo(x + 10*s, y - 4*s);
+    ctx.lineTo(x + 14*s, y + 8*s);
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 1.5; ctx.stroke();
+    // Sun
+    ctx.beginPath();
+    ctx.arc(x + 6*s, y - 5*s, 3*s, 0, Math.PI*2);
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 1.5; ctx.stroke();
+}
+
+function iconLock(x, y, scale) {
+    const s = scale || 1;
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    // Lock body
+    ctx.beginPath();
+    ctx.rect(x - 8*s, y - 2*s, 16*s, 12*s);
+    ctx.stroke();
+    // Shackle
+    ctx.beginPath();
+    ctx.arc(x, y - 2*s, 6*s, Math.PI, 0);
+    ctx.stroke();
+    // Keyhole
+    ctx.beginPath();
+    ctx.arc(x, y + 3*s, 2*s, 0, Math.PI*2);
+    ctx.fillStyle = WHITE; ctx.fill();
+}
+
+function iconKey(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    // Ring
+    ctx.beginPath();
+    ctx.arc(x - 6, y, 5, 0, Math.PI*2);
+    ctx.stroke();
+    // Shaft
+    ctx.beginPath();
+    ctx.moveTo(x - 1, y);
+    ctx.lineTo(x + 10, y);
+    ctx.stroke();
+    // Teeth
+    ctx.beginPath();
+    ctx.moveTo(x + 7, y);
+    ctx.lineTo(x + 7, y + 4);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + 10, y);
+    ctx.lineTo(x + 10, y + 4);
+    ctx.stroke();
+}
+
+// ── Easing helpers ──
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+// ── Animation state ──
+const PHASE_DURATIONS = {
+    contentAppear: 1.5,    // File icon appears
+    encrypt: 1.5,          // Lock appears over content
+    trieAppear: 2.0,       // ACT trie fades in
+    grantA: 1.5,           // Grant User A
+    grantB: 1.5,           // Grant User B
+    grantC: 1.5,           // Grant User C
+    hold: 2.0,             // All connected, hold
+    revokeB: 2.0,          // Revoke User B
+    holdRevoked: 2.0,      // Hold with B revoked
+    fadeOut: 1.5            // Fade out to loop
+};
+
+const phases = Object.keys(PHASE_DURATIONS);
+const totalCycle = Object.values(PHASE_DURATIONS).reduce((a, b) => a + b, 0);
+
+let elapsed = 0;
+
+function getPhaseInfo(t) {
+    let acc = 0;
+    for (let i = 0; i < phases.length; i++) {
+        const dur = PHASE_DURATIONS[phases[i]];
+        if (t < acc + dur) {
+            return { phase: phases[i], progress: (t - acc) / dur, index: i };
+        }
+        acc += dur;
+    }
+    return { phase: phases[phases.length - 1], progress: 1, index: phases.length - 1 };
+}
+
+function phaseComplete(phaseIndex, info) {
+    return info.index > phaseIndex || (info.index === phaseIndex && info.progress >= 1);
+}
+
+// ── Node positions ──
+// Left: encrypted content
+const contentX = 160, contentY = 340;
+
+// Center: ACT trie — binary tree
+// Root at level 0, branches down
+const trieRootX = 580, trieRootY = 160;
+const trieSpacingY = 110;
+const TRIE_R = 22, TRIE_IR = 15;
+
+// Trie nodes: root -> 2 children -> 4 leaves (3 used for users)
+const trieNodes = [
+    // Level 0: root
+    { x: 580, y: 160, label: 'Root' },
+    // Level 1: two branches
+    { x: 480, y: 270, label: '0' },
+    { x: 680, y: 270, label: '1' },
+    // Level 2: four leaves (only 3 used as grant targets)
+    { x: 430, y: 380, label: '00' },
+    { x: 530, y: 380, label: '01' },
+    { x: 630, y: 380, label: '10' },
+    { x: 730, y: 380, label: '11' },
+];
+
+// Trie edges: [parent, child]
+const trieEdges = [
+    [0, 1], [0, 2],
+    [1, 3], [1, 4],
+    [2, 5], [2, 6],
+];
+
+// Right: user nodes — connected to specific leaves
+const users = [
+    { x: 1060, y: 200, label: 'User A', leafIdx: 3, grantPhase: 'grantA' },
+    { x: 1060, y: 370, label: 'User B', leafIdx: 4, grantPhase: 'grantB' },
+    { x: 1060, y: 540, label: 'User C', leafIdx: 5, grantPhase: 'grantC' },
+];
+
+// Generate hex addresses for trie leaves
+seed = 42;
+const leafHashes = [];
+for (let i = 0; i < 7; i++) leafHashes.push(rngHex(4));
+
+// ── Scene logic ──
+
+function drawTrieEdge(parentIdx, childIdx, alpha) {
+    const p = trieNodes[parentIdx];
+    const c = trieNodes[childIdx];
+    ctx.globalAlpha = alpha;
+    ln(p.x, p.y + TRIE_R, c.x, c.y - TRIE_R, WHITE, LINE_W);
+    ctx.globalAlpha = 1;
+}
+
+function drawTrieNode(idx, alpha) {
+    const n = trieNodes[idx];
+    ctx.globalAlpha = alpha;
+    shell(n.x, n.y, TRIE_R, TRIE_IR);
+    // Draw label below node
+    renderText(n.label, n.x, n.y + TRIE_R + 4, WHITE, 'bold 13px monospace', 'center', 'top');
+    ctx.globalAlpha = 1;
+}
+
+function drawContentNode(alpha, showLock) {
+    ctx.globalAlpha = alpha;
+    shell(contentX, contentY, NODE_R, INNER_R);
+    iconImage(contentX, contentY - 4, 0.8);
+    renderText('Encrypted', contentX, contentY + NODE_R + 6, WHITE, FONT, 'center', 'top');
+    renderText('Content', contentX, contentY + NODE_R + 24, WHITE, FONT, 'center', 'top');
+    ctx.globalAlpha = 1;
+
+    if (showLock) {
+        ctx.globalAlpha = alpha;
+        // Lock icon above the content node
+        iconLock(contentX + 30, contentY - 30, 1);
+        ctx.globalAlpha = 1;
+    }
+}
+
+function drawUserNode(userIdx, alpha) {
+    const u = users[userIdx];
+    ctx.globalAlpha = alpha;
+    shell(u.x, u.y, 34, 24);
+    iconLaptop(u.x, u.y);
+    renderText(u.label, u.x, u.y + 34 + 6, WHITE, FONT, 'center', 'top');
+    ctx.globalAlpha = 1;
+}
+
+function drawGrantLine(userIdx, alpha, color) {
+    const u = users[userIdx];
+    const leaf = trieNodes[u.leafIdx];
+    ctx.globalAlpha = alpha;
+    // Line from user to trie leaf
+    ln(u.x - 34, u.y, leaf.x + TRIE_R, leaf.y, color || ORANGE, 2);
+    ctx.globalAlpha = 1;
+}
+
+function drawContentToRoot(alpha) {
+    const rootNode = trieNodes[0];
+    ctx.globalAlpha = alpha;
+    ln(contentX + NODE_R, contentY, rootNode.x - TRIE_R, rootNode.y, ORANGE, 2);
+    // Key icon midway
+    const midX = (contentX + NODE_R + rootNode.x - TRIE_R) / 2;
+    const midY = (contentY + rootNode.y) / 2;
+    iconKey(midX, midY);
+    renderText('Decryption Key', midX, midY + 14, WHITE, 'bold 13px Arial, sans-serif', 'center', 'top');
+    ctx.globalAlpha = 1;
+}
+
+function drawScene(info) {
+    const { phase, progress, index } = info;
+
+    // Overall fade for loop reset
+    let globalFade = 1;
+    if (phase === 'fadeOut') {
+        globalFade = 1 - easeInOut(progress);
+    }
+
+    // Phase 1: Content appears
+    const contentAlpha = globalFade * (index >= 0 ? easeOut(clamp01(phase === 'contentAppear' ? progress : (index > 0 ? 1 : 0))) : 0);
+
+    // Phase 2: Lock appears
+    const showLock = index >= 1;
+    const lockAlpha = globalFade * (index >= 1 ? easeOut(clamp01(phase === 'encrypt' ? progress : (index > 1 ? 1 : 0))) : 0);
+
+    // Phase 3: Trie appears
+    const trieAlpha = globalFade * (index >= 2 ? easeOut(clamp01(phase === 'trieAppear' ? progress : (index > 2 ? 1 : 0))) : 0);
+
+    // Draw content
+    if (contentAlpha > 0) {
+        drawContentNode(contentAlpha, showLock && lockAlpha > 0);
+    }
+
+    // Draw trie
+    if (trieAlpha > 0) {
+        // Draw edges first
+        for (const [pi, ci] of trieEdges) {
+            drawTrieEdge(pi, ci, trieAlpha);
+        }
+        // Draw nodes on top
+        for (let i = 0; i < trieNodes.length; i++) {
+            drawTrieNode(i, trieAlpha);
+        }
+        // Draw content-to-root line
+        drawContentToRoot(trieAlpha);
+    }
+
+    // Users and grant lines
+    const grantPhases = ['grantA', 'grantB', 'grantC'];
+    const grantIndices = [3, 4, 5]; // phase indices
+
+    for (let i = 0; i < 3; i++) {
+        const gPhaseIdx = grantIndices[i];
+        const isRevoked = (i === 1) && phaseComplete(6, info); // User B revoked after hold
+
+        if (index >= gPhaseIdx) {
+            let userAlpha;
+            if (phase === grantPhases[i]) {
+                userAlpha = easeOut(progress);
+            } else if (index > gPhaseIdx) {
+                userAlpha = 1;
+            } else {
+                userAlpha = 0;
+            }
+            userAlpha *= globalFade;
+
+            if (userAlpha > 0) {
+                // Handle revoke for User B
+                let lineAlpha = userAlpha;
+                let lineColor = ORANGE;
+
+                if (i === 1 && phase === 'revokeB') {
+                    // Fading out
+                    lineAlpha = userAlpha * (1 - easeInOut(progress));
+                    // Mix color toward dim
+                    const dimFactor = 1 - easeInOut(progress);
+                    lineColor = ORANGE;
+                    lineAlpha = userAlpha * dimFactor;
+                } else if (isRevoked && phase !== 'revokeB') {
+                    lineAlpha = 0;
+                }
+
+                // Draw grant line
+                if (lineAlpha > 0) {
+                    drawGrantLine(i, lineAlpha, lineColor);
+                }
+
+                // Draw user node (stays visible but dimmed if revoked)
+                let nodeAlpha = userAlpha;
+                if (isRevoked || (i === 1 && phase === 'revokeB')) {
+                    const revokeProg = phase === 'revokeB' ? easeInOut(progress) : 1;
+                    nodeAlpha = userAlpha * (1 - revokeProg * 0.6); // Dim to 40%
+                }
+                drawUserNode(i, nodeAlpha);
+
+                // Draw revoked X over User B
+                if (i === 1 && (isRevoked || (phase === 'revokeB' && progress > 0.5))) {
+                    const xAlpha = phase === 'revokeB' ? easeOut(clamp01((progress - 0.5) * 2)) : 1;
+                    ctx.globalAlpha = xAlpha * globalFade;
+                    ctx.strokeStyle = '#ff4444';
+                    ctx.lineWidth = 3;
+                    const u = users[1];
+                    ctx.beginPath();
+                    ctx.moveTo(u.x - 14, u.y - 14);
+                    ctx.lineTo(u.x + 14, u.y + 14);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(u.x + 14, u.y - 14);
+                    ctx.lineTo(u.x - 14, u.y + 14);
+                    ctx.stroke();
+                    ctx.globalAlpha = 1;
+                }
+
+                // "Granted" / "Revoked" label
+                if (i === 1 && (isRevoked || phase === 'revokeB')) {
+                    const rAlpha = phase === 'revokeB' ? easeOut(clamp01((progress - 0.3) * 2)) : 1;
+                    ctx.globalAlpha = rAlpha * globalFade;
+                    renderText('Revoked', users[1].x, users[1].y - 50, '#ff4444', 'bold 14px Arial, sans-serif', 'center', 'middle');
+                    ctx.globalAlpha = 1;
+                } else if (lineAlpha > 0 && userAlpha > 0.5) {
+                    ctx.globalAlpha = userAlpha;
+                    renderText('Granted', users[i].x, users[i].y - (i === 1 ? 50 : 46), ORANGE, 'bold 14px Arial, sans-serif', 'center', 'middle');
+                    ctx.globalAlpha = 1;
+                }
+            }
+        }
+    }
+
+    // Section labels
+    if (trieAlpha > 0) {
+        ctx.globalAlpha = trieAlpha;
+        renderText('Access Control Trie', 580, 105, WHITE, 'bold 18px Arial, sans-serif', 'center', 'top');
+        ctx.globalAlpha = 1;
+    }
+
+    // Phase indicator labels
+    if (phase === 'encrypt' && progress > 0.3) {
+        ctx.globalAlpha = easeOut(clamp01((progress - 0.3) / 0.7)) * globalFade;
+        renderText('Content encrypted', contentX, contentY + NODE_R + 50, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top');
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('ACT Access Control', W/2, 21);
+}
+
+// ── Main loop ──
+let lastTime = 0;
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+
+    elapsed += dt;
+    const cycleTime = elapsed % totalCycle;
+    const info = getPhaseInfo(cycleTime);
+
+    // 1. Prerender
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+
+    // 2. Render scene
+    drawScene(info);
+
+    // 3. Bottom explanatory text
+    renderText(
+        'The Access Control Trie manages encryption keys \u2014 granting and revoking access to content on Swarm.',
+        W / 2, H - 30,
+        'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'middle'
+    );
+
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PSS Messaging – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconLaptop(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(x-12, y-10, 24, 16); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x-16, y+6); ctx.lineTo(x+16, y+6);
+    ctx.lineTo(x+16, y+10); ctx.lineTo(x-16, y+10);
+    ctx.closePath(); ctx.stroke();
+}
+
+function iconHexDouble(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI/3*i - Math.PI/6;
+            const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 14);
+    hex(x, y, 9);
+}
+
+// Envelope icon — white strokes, ~28px wide
+function iconEnvelope(x, y, scale) {
+    const s = scale || 1;
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(x - 14*s, y - 9*s, 28*s, 18*s);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 14*s, y - 9*s);
+    ctx.lineTo(x, y + 3*s);
+    ctx.lineTo(x + 14*s, y - 9*s);
+    ctx.stroke();
+}
+
+// Lock icon — white strokes, ~24px tall
+function iconLock(x, y, scale) {
+    const s = scale || 1;
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    // Lock body
+    ctx.beginPath();
+    ctx.rect(x - 8*s, y - 2*s, 16*s, 12*s);
+    ctx.stroke();
+    // Shackle
+    ctx.beginPath();
+    ctx.arc(x, y - 2*s, 6*s, Math.PI, 0);
+    ctx.stroke();
+    // Keyhole dot
+    ctx.beginPath();
+    ctx.arc(x, y + 3*s, 2*s, 0, Math.PI*2);
+    ctx.fillStyle = WHITE; ctx.fill();
+}
+
+// Chunk icon (document with folded corner) — for Trojan chunk
+function iconChunk(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    const w = 18, h = 24;
+    const fold = 6;
+    ctx.beginPath();
+    ctx.moveTo(x - w/2, y - h/2);
+    ctx.lineTo(x + w/2 - fold, y - h/2);
+    ctx.lineTo(x + w/2, y - h/2 + fold);
+    ctx.lineTo(x + w/2, y + h/2);
+    ctx.lineTo(x - w/2, y + h/2);
+    ctx.closePath();
+    ctx.stroke();
+    // Fold line
+    ctx.beginPath();
+    ctx.moveTo(x + w/2 - fold, y - h/2);
+    ctx.lineTo(x + w/2 - fold, y - h/2 + fold);
+    ctx.lineTo(x + w/2, y - h/2 + fold);
+    ctx.stroke();
+}
+
+// ── Easing helpers ──
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+// ── Animation state ──
+// Phases:
+// 0: message appears at sender (0-1s)
+// 1: encryption — lock wraps message (1-2.2s)
+// 2: becomes Trojan chunk (2.2-3.2s)
+// 3: chunk travels through relay nodes to neighbourhood (3.2-6.2s)
+// 4: recipient detects & decrypts (6.2-7.6s)
+// 5: message appears at recipient (7.6-8.6s)
+// 6: hold + fade (8.6-10.6s)
+const PHASE_TIMES = [0, 1.0, 2.2, 3.2, 6.2, 7.6, 8.6, 10.6];
+let elapsed = 0;
+
+function getPhase() {
+    const t = elapsed % PHASE_TIMES[PHASE_TIMES.length - 1];
+    for (let i = PHASE_TIMES.length - 1; i >= 0; i--) {
+        if (t >= PHASE_TIMES[i]) return { phase: i, t: t - PHASE_TIMES[i], dur: (PHASE_TIMES[i+1] || PHASE_TIMES[i] + 1) - PHASE_TIMES[i] };
+    }
+    return { phase: 0, t: 0, dur: 1 };
+}
+
+// ── Node positions ──
+const sender   = { x: 100, y: 340, r: NODE_R, ir: INNER_R, icon: iconLaptop, label: 'Sender' };
+const relay1   = { x: 380, y: 250, r: 34, ir: 24, icon: iconHexDouble, label: 'Relay' };
+const relay2   = { x: 560, y: 340, r: 34, ir: 24, icon: iconHexDouble, label: 'Relay' };
+const relay3   = { x: 740, y: 280, r: 34, ir: 24, icon: iconHexDouble, label: 'Relay' };
+
+// Target neighbourhood nodes
+const nbCenter = { x: 1020, y: 310 };
+const nbRadius = 110;
+const recipient = { x: 980, y: 240, r: 34, ir: 24, icon: iconHexDouble, label: 'Recipient' };
+const nbNode1   = { x: 1070, y: 380, r: 34, ir: 24, icon: iconHexDouble, label: 'Peer' };
+const nbNode2   = { x: 960, y: 400, r: 34, ir: 24, icon: iconHexDouble, label: 'Peer' };
+
+const allNodes = [sender, relay1, relay2, relay3, recipient, nbNode1, nbNode2];
+
+// Route path for the chunk: sender → relay1 → relay2 → relay3 → recipient
+const routePath = [
+    [sender.x, sender.y],
+    [relay1.x, relay1.y],
+    [relay2.x, relay2.y],
+    [relay3.x, relay3.y],
+    [recipient.x, recipient.y]
+];
+const routeTotal = pathLen(routePath);
+
+// Connection lines
+const connections = [
+    [sender, relay1],
+    [relay1, relay2],
+    [relay2, relay3],
+    [relay3, recipient],
+    [relay3, nbNode1],
+    [recipient, nbNode1],
+    [recipient, nbNode2],
+    [nbNode1, nbNode2]
+];
+
+// ── Scene logic ──
+
+// Encryption visual position (near sender)
+const encryptX = 220, encryptY = 340;
+
+function drawNeighbourhoodCircle() {
+    ctx.beginPath();
+    ctx.arc(nbCenter.x, nbCenter.y, nbRadius + 20, 0, Math.PI * 2);
+    ctx.setLineDash([8, 5]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Label
+    renderText('Target Neighbourhood', nbCenter.x, nbCenter.y + nbRadius + 30, 'rgba(255,255,255,0.5)', 'bold 13px Arial, sans-serif', 'center', 'top');
+}
+
+function drawConnectionLines() {
+    for (const [a, b] of connections) {
+        ln(a.x, a.y, b.x, b.y);
+    }
+}
+
+function drawAnimatedElements() {
+    const { phase, t, dur } = getPhase();
+    const progress = clamp01(t / dur);
+
+    if (phase === 0) {
+        // Message appears at sender with scale-in
+        const s = easeOut(progress);
+        ctx.save();
+        ctx.globalAlpha = s;
+        ctx.translate(sender.x + 60, sender.y);
+        ctx.scale(s, s);
+        iconEnvelope(0, 0, 1.2);
+        ctx.restore();
+        // Label
+        if (progress > 0.3) {
+            ctx.globalAlpha = clamp01((progress - 0.3) / 0.4);
+            renderText('Message', sender.x + 60, sender.y + 22, WHITE, 'bold 13px Arial, sans-serif', 'center', 'top');
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    if (phase === 1) {
+        // Encryption step: envelope moves toward encrypt pos, lock appears
+        const moveP = clamp01(progress * 2);
+        const lockP = clamp01((progress - 0.3) / 0.5);
+        const ex = sender.x + 60 + (encryptX - sender.x - 60) * easeInOut(moveP);
+        const ey = sender.y;
+
+        // Draw envelope
+        ctx.save();
+        ctx.globalAlpha = 1 - clamp01((progress - 0.7) / 0.3);
+        iconEnvelope(ex, ey, 1.2);
+        ctx.restore();
+
+        // Draw lock appearing over it
+        if (lockP > 0) {
+            ctx.save();
+            ctx.globalAlpha = easeOut(lockP);
+            const ls = easeOut(lockP);
+            ctx.translate(ex, ey);
+            ctx.scale(ls, ls);
+            iconLock(0, 0, 1.3);
+            ctx.restore();
+            renderText('Encrypt', ex, ey + 28, ORANGE, 'bold 13px Arial, sans-serif', 'center', 'top');
+        }
+    }
+
+    if (phase === 2) {
+        // Lock transforms into Trojan chunk
+        const morphP = easeInOut(progress);
+        const cx = encryptX + (sender.x + 60 - encryptX + 80) * 0; // stay in place
+        const cy = sender.y;
+
+        // Fade out lock
+        ctx.save();
+        ctx.globalAlpha = 1 - morphP;
+        iconLock(encryptX, cy, 1.3);
+        ctx.restore();
+
+        // Fade in chunk
+        ctx.save();
+        ctx.globalAlpha = morphP;
+        const s = 0.5 + 0.5 * morphP;
+        ctx.translate(encryptX, cy);
+        ctx.scale(s, s);
+        iconChunk(0, 0);
+        // Subtle indicator: small orange dot inside chunk (trojan marker)
+        ctx.beginPath();
+        ctx.arc(0, 4, 3, 0, Math.PI * 2);
+        ctx.fillStyle = ORANGE; ctx.fill();
+        ctx.restore();
+
+        if (morphP > 0.4) {
+            ctx.globalAlpha = clamp01((morphP - 0.4) / 0.4);
+            renderText('Trojan Chunk', encryptX, cy + 28, ORANGE, 'bold 13px Arial, sans-serif', 'center', 'top');
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    if (phase === 3) {
+        // Chunk travels along route
+        const dist = easeInOut(progress) * routeTotal;
+        const pos = posAt(routePath, dist);
+
+        // Draw chunk at current position
+        ctx.save();
+        ctx.translate(pos[0], pos[1]);
+        iconChunk(0, 0);
+        // Trojan marker
+        ctx.beginPath();
+        ctx.arc(0, 4, 3, 0, Math.PI * 2);
+        ctx.fillStyle = ORANGE; ctx.fill();
+        ctx.restore();
+
+        // Highlight active connection segment
+        let rem = dist;
+        for (let i = 1; i < routePath.length; i++) {
+            const seg = ptLen(routePath[i-1], routePath[i]);
+            if (rem <= seg) {
+                // Active segment — draw dashed orange highlight
+                ctx.beginPath();
+                ctx.moveTo(routePath[i-1][0], routePath[i-1][1]);
+                ctx.lineTo(routePath[i][0], routePath[i][1]);
+                ctx.setLineDash([6, 4]);
+                ctx.strokeStyle = ORANGE;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.setLineDash([]);
+                break;
+            }
+            rem -= seg;
+        }
+
+        // "Push sync" label following chunk
+        renderText('push sync', pos[0], pos[1] - 24, 'rgba(255,255,255,0.5)', 'bold 11px Arial, sans-serif', 'center', 'bottom');
+    }
+
+    if (phase === 4) {
+        // Chunk at recipient, detection and decryption
+        const detectP = clamp01(progress * 2);
+        const decryptP = clamp01((progress - 0.4) / 0.6);
+
+        // Chunk at recipient
+        ctx.save();
+        ctx.globalAlpha = 1 - decryptP;
+        ctx.translate(recipient.x, recipient.y - 50);
+        const pulse = 1 + 0.08 * Math.sin(detectP * Math.PI * 4);
+        ctx.scale(pulse, pulse);
+        iconChunk(0, 0);
+        ctx.beginPath();
+        ctx.arc(0, 4, 3, 0, Math.PI * 2);
+        ctx.fillStyle = ORANGE; ctx.fill();
+        ctx.restore();
+
+        // Detection ring pulse
+        if (detectP > 0 && detectP < 1) {
+            ctx.beginPath();
+            ctx.arc(recipient.x, recipient.y, 34 + 20 * detectP, 0, Math.PI * 2);
+            ctx.strokeStyle = ORANGE;
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 1 - detectP;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+
+        // Lock opening / decrypt visual
+        if (decryptP > 0) {
+            ctx.save();
+            ctx.globalAlpha = 1 - decryptP;
+            ctx.translate(recipient.x, recipient.y - 50);
+            iconLock(0, 0, 0.8);
+            ctx.restore();
+
+            renderText('Decrypt', recipient.x, recipient.y - 80, ORANGE, 'bold 13px Arial, sans-serif', 'center', 'top');
+        }
+    }
+
+    if (phase === 5) {
+        // Message appears at recipient
+        const s = easeOut(progress);
+        ctx.save();
+        ctx.globalAlpha = s;
+        ctx.translate(recipient.x, recipient.y - 60);
+        ctx.scale(s, s);
+        iconEnvelope(0, 0, 1.2);
+        ctx.restore();
+
+        if (progress > 0.3) {
+            ctx.globalAlpha = clamp01((progress - 0.3) / 0.4);
+            renderText('Message received', recipient.x, recipient.y - 85, WHITE, 'bold 13px Arial, sans-serif', 'center', 'top');
+            ctx.globalAlpha = 1;
+        }
+
+        // Success ring
+        ctx.beginPath();
+        ctx.arc(recipient.x, recipient.y, 34 + 8, 0, Math.PI * 2);
+        ctx.strokeStyle = ORANGE;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = s;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
+    if (phase === 6) {
+        // Hold then fade
+        const fadeP = clamp01((progress - 0.5) / 0.5);
+        ctx.save();
+        ctx.globalAlpha = 1 - fadeP;
+        ctx.translate(recipient.x, recipient.y - 60);
+        iconEnvelope(0, 0, 1.2);
+        ctx.restore();
+
+        if (fadeP < 0.8) {
+            ctx.globalAlpha = 1 - fadeP;
+            renderText('Message received', recipient.x, recipient.y - 85, WHITE, 'bold 13px Arial, sans-serif', 'center', 'top');
+            ctx.globalAlpha = 1;
+        }
+
+        // Success ring fading
+        ctx.beginPath();
+        ctx.arc(recipient.x, recipient.y, 34 + 8, 0, Math.PI * 2);
+        ctx.strokeStyle = ORANGE;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 1 - fadeP;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('PSS Messaging', W/2, 21);
+}
+
+// ── Main loop ──
+let lastTime = 0;
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+    elapsed += dt;
+
+    // 1. prerender
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+    drawConnectionLines();
+    drawNeighbourhoodCircle();
+
+    // 2. update + render animated elements
+    drawAnimatedElements();
+
+    // 3. postrender — nodes on top
+    for (const n of allNodes) {
+        shell(n.x, n.y, n.r, n.ir);
+        n.icon(n.x, n.y);
+        if (n.label) renderText(n.label, n.x, n.y + (n.r || NODE_R) + 6, WHITE, FONT, 'center', 'top');
+    }
+
+    // Explanatory text
+    renderText(
+        'Trojan chunks carry encrypted messages routed to target neighbourhoods \u2014 enabling private communication over Swarm.',
+        W/2, H - 28, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top'
+    );
+
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

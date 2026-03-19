@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Push Syncing – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconLaptop(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(x-12, y-10, 24, 16); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x-16, y+6); ctx.lineTo(x+16, y+6);
+    ctx.lineTo(x+16, y+10); ctx.lineTo(x-16, y+10);
+    ctx.closePath(); ctx.stroke();
+}
+
+function iconHexDouble(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI/3*i - Math.PI/6;
+            const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 14);
+    hex(x, y, 9);
+}
+
+// ── Easing helpers ──
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+// ── Node positions ──
+// Uploader on the left
+const uploader = { x: 120, y: 340, r: NODE_R, ir: INNER_R, icon: iconLaptop, label: 'Uploader' };
+
+// Relay nodes in the middle (forwarding path)
+const relay1 = { x: 340, y: 340, r: 34, ir: 24, icon: iconHexDouble, label: 'Relay' };
+const relay2 = { x: 530, y: 260, r: 34, ir: 24, icon: iconHexDouble, label: 'Relay' };
+const relay3 = { x: 720, y: 340, r: 34, ir: 24, icon: iconHexDouble, label: 'Relay' };
+
+// Responsible neighbourhood cluster (right side)
+const nhoodCenterX = 1020, nhoodCenterY = 340;
+const nhood1 = { x: nhoodCenterX - 60, y: nhoodCenterY - 70, r: 34, ir: 24, icon: iconHexDouble, label: '' };
+const nhood2 = { x: nhoodCenterX + 60, y: nhoodCenterY - 70, r: 34, ir: 24, icon: iconHexDouble, label: '' };
+const nhood3 = { x: nhoodCenterX - 60, y: nhoodCenterY + 70, r: 34, ir: 24, icon: iconHexDouble, label: '' };
+const nhood4 = { x: nhoodCenterX + 60, y: nhoodCenterY + 70, r: 34, ir: 24, icon: iconHexDouble, label: '' };
+
+const relayNodes = [relay1, relay2, relay3];
+const nhoodNodes = [nhood1, nhood2, nhood3, nhood4];
+const allNodes = [uploader, ...relayNodes, ...nhoodNodes];
+
+// ── Connection edges ──
+const edges = [
+    [uploader, relay1],
+    [relay1, relay2],
+    [relay2, relay3],
+    [relay3, nhood1],
+    [relay3, nhood2],
+    [relay3, nhood3],
+    [relay3, nhood4]
+];
+
+// PO labels on edges (proximity order increases toward destination)
+const poLabels = [
+    { edge: [uploader, relay1], po: 'PO 1' },
+    { edge: [relay1, relay2], po: 'PO 3' },
+    { edge: [relay2, relay3], po: 'PO 5' },
+    { edge: [relay3, nhood1], po: 'PO 8' },
+    { edge: [relay3, nhood2], po: 'PO 8' },
+    { edge: [relay3, nhood3], po: 'PO 8' },
+    { edge: [relay3, nhood4], po: 'PO 8' }
+];
+
+// Internal neighbourhood connections (to show they're a cluster)
+const nhoodEdges = [
+    [nhood1, nhood2],
+    [nhood2, nhood4],
+    [nhood4, nhood3],
+    [nhood3, nhood1],
+    [nhood1, nhood4],
+    [nhood2, nhood3]
+];
+
+// ── Animation state ──
+// Generate chunk addresses upfront with seeded RNG
+const chunkAddresses = [];
+for (let i = 0; i < 5; i++) chunkAddresses.push(rngHex(8));
+
+const NUM_CHUNKS = 5;
+// Path through relay nodes: uploader → relay1 → relay2 → relay3 → neighbourhood center
+const chunkPath = [
+    [uploader.x, uploader.y],
+    [relay1.x, relay1.y],
+    [relay2.x, relay2.y],
+    [relay3.x, relay3.y]
+];
+const totalPathLen = pathLen(chunkPath);
+
+// Timing per chunk (seconds)
+const APPEAR_DUR = 0.3;       // chunk appears at uploader
+const TRAVEL_DUR = 2.0;       // chunk travels relay path
+const FAN_DUR = 0.6;          // chunk fans out to neighbourhood nodes
+const GLOW_DUR = 0.8;         // neighbourhood glow/pulse
+const PAUSE_DUR = 0.5;        // pause before next chunk
+const CHUNK_CYCLE = APPEAR_DUR + TRAVEL_DUR + FAN_DUR + GLOW_DUR + PAUSE_DUR;
+const TOTAL_CYCLE = NUM_CHUNKS * CHUNK_CYCLE + 1.5; // extra pause at end before loop
+
+let elapsed = 0;
+
+// ── Scene logic ──
+function getChunkState(chunkIndex, time) {
+    const start = chunkIndex * CHUNK_CYCLE;
+    const t = time - start;
+    if (t < 0) return { phase: 'waiting' };
+    if (t < APPEAR_DUR) return { phase: 'appear', progress: clamp01(t / APPEAR_DUR) };
+    const tTravel = t - APPEAR_DUR;
+    if (tTravel < TRAVEL_DUR) return { phase: 'travel', progress: clamp01(tTravel / TRAVEL_DUR) };
+    const tFan = tTravel - TRAVEL_DUR;
+    if (tFan < FAN_DUR) return { phase: 'fan', progress: clamp01(tFan / FAN_DUR) };
+    const tGlow = tFan - FAN_DUR;
+    if (tGlow < GLOW_DUR) return { phase: 'glow', progress: clamp01(tGlow / GLOW_DUR) };
+    return { phase: 'done' };
+}
+
+function drawChunkPacket(x, y, alpha) {
+    ctx.globalAlpha = alpha;
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2; ctx.stroke();
+    ctx.globalAlpha = 1;
+}
+
+function drawLines() {
+    // Main edges
+    for (const [a, b] of edges) {
+        ln(a.x, a.y, b.x, b.y);
+    }
+
+    // Neighbourhood internal edges (dashed, dimmer)
+    ctx.setLineDash([4, 4]);
+    for (const [a, b] of nhoodEdges) {
+        ln(a.x, a.y, b.x, b.y, 'rgba(255,255,255,0.3)', 1);
+    }
+    ctx.setLineDash([]);
+
+    // PO labels on relay edges (not the fan-out edges to avoid clutter)
+    for (let i = 0; i < 3; i++) {
+        const pl = poLabels[i];
+        const a = pl.edge[0], b = pl.edge[1];
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        // offset label above the line
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.sqrt(dx*dx + dy*dy);
+        const nx = -dy / len, ny = dx / len;
+        const offX = mx + nx * 18, offY = my + ny * 18;
+        renderText(pl.po, offX, offY, 'rgba(255,255,255,0.7)', 'bold 13px monospace', 'center', 'middle');
+    }
+
+    // Single PO 8 label for the fan-out
+    renderText('PO 8', relay3.x + 70, relay3.y - 10, 'rgba(255,255,255,0.7)', 'bold 13px monospace', 'center', 'middle');
+}
+
+function drawNeighbourhoodCircle() {
+    // Dashed circle around the neighbourhood
+    ctx.beginPath();
+    ctx.arc(nhoodCenterX, nhoodCenterY, 130, 0, Math.PI * 2);
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Label
+    renderText('Responsible', nhoodCenterX, nhoodCenterY + 135, 'rgba(255,255,255,0.7)', 'bold 14px Arial, sans-serif', 'center', 'top');
+    renderText('Neighbourhood', nhoodCenterX, nhoodCenterY + 152, 'rgba(255,255,255,0.7)', 'bold 14px Arial, sans-serif', 'center', 'top');
+}
+
+function drawGlow(node, intensity) {
+    // Glow ring around node
+    const r = (node.r || 34) + 8;
+    ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(212, 99, 58, ${intensity * 0.8})`;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    // Outer soft glow
+    const r2 = r + 6;
+    ctx.beginPath(); ctx.arc(node.x, node.y, r2, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(212, 99, 58, ${intensity * 0.4})`;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+}
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Push Syncing', W/2, 21);
+}
+
+// ── Main loop ──
+let lastTime = 0;
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+    elapsed += dt;
+
+    // Loop the whole animation
+    const loopTime = elapsed % TOTAL_CYCLE;
+
+    // 1. prerender — background, header, lines
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+    drawLines();
+    drawNeighbourhoodCircle();
+
+    // Active chunk address display
+    let activeChunkIdx = -1;
+    for (let i = NUM_CHUNKS - 1; i >= 0; i--) {
+        const state = getChunkState(i, loopTime);
+        if (state.phase !== 'waiting' && state.phase !== 'done') {
+            activeChunkIdx = i;
+            break;
+        }
+    }
+
+    // Show chunk address being pushed
+    if (activeChunkIdx >= 0) {
+        renderText('Chunk: 0x' + chunkAddresses[activeChunkIdx] + '...', 120, 420, 'rgba(255,255,255,0.6)', 'bold 13px monospace', 'center', 'top');
+    }
+
+    // Show completed chunks counter
+    let completedCount = 0;
+    for (let i = 0; i < NUM_CHUNKS; i++) {
+        const state = getChunkState(i, loopTime);
+        if (state.phase === 'done') completedCount++;
+    }
+    if (completedCount > 0) {
+        renderText(completedCount + '/' + NUM_CHUNKS + ' stored', nhoodCenterX, nhoodCenterY + 175, 'rgba(255,255,255,0.5)', 'bold 13px Arial, sans-serif', 'center', 'top');
+    }
+
+    // 2. render — animated chunks
+    for (let i = 0; i < NUM_CHUNKS; i++) {
+        const state = getChunkState(i, loopTime);
+
+        if (state.phase === 'appear') {
+            // Chunk appears at uploader with scale-in
+            const s = easeOut(state.progress);
+            ctx.globalAlpha = s;
+            ctx.beginPath(); ctx.arc(uploader.x, uploader.y, 8 * s, 0, Math.PI * 2);
+            ctx.fillStyle = ORANGE; ctx.fill();
+            ctx.strokeStyle = WHITE; ctx.lineWidth = 2; ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+
+        if (state.phase === 'travel') {
+            // Chunk travels along relay path
+            const dist = easeInOut(state.progress) * totalPathLen;
+            const pos = posAt(chunkPath, dist);
+            drawChunkPacket(pos[0], pos[1], 1);
+
+            // Draw trailing line (orange) showing path taken
+            const trailDist = dist;
+            if (trailDist > 0) {
+                ctx.beginPath();
+                ctx.moveTo(chunkPath[0][0], chunkPath[0][1]);
+                let rem = trailDist;
+                for (let j = 1; j < chunkPath.length; j++) {
+                    const seg = ptLen(chunkPath[j-1], chunkPath[j]);
+                    if (rem >= seg) {
+                        ctx.lineTo(chunkPath[j][0], chunkPath[j][1]);
+                        rem -= seg;
+                    } else {
+                        const t = rem / seg;
+                        ctx.lineTo(
+                            chunkPath[j-1][0] + (chunkPath[j][0]-chunkPath[j-1][0]) * t,
+                            chunkPath[j-1][1] + (chunkPath[j][1]-chunkPath[j-1][1]) * t
+                        );
+                        break;
+                    }
+                }
+                ctx.strokeStyle = ORANGE;
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.5;
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        if (state.phase === 'fan') {
+            // Chunk fans out from relay3 to each neighbourhood node
+            const p = easeOut(state.progress);
+            for (const nh of nhoodNodes) {
+                const fx = relay3.x + (nh.x - relay3.x) * p;
+                const fy = relay3.y + (nh.y - relay3.y) * p;
+                drawChunkPacket(fx, fy, 1);
+            }
+
+            // Orange trail from relay3 to each nhood node
+            ctx.globalAlpha = 0.4;
+            for (const nh of nhoodNodes) {
+                const fx = relay3.x + (nh.x - relay3.x) * p;
+                const fy = relay3.y + (nh.y - relay3.y) * p;
+                ctx.beginPath();
+                ctx.moveTo(relay3.x, relay3.y);
+                ctx.lineTo(fx, fy);
+                ctx.strokeStyle = ORANGE;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        if (state.phase === 'glow') {
+            // Neighbourhood nodes glow/pulse
+            const pulseIntensity = 1 - state.progress; // fade out
+            for (const nh of nhoodNodes) {
+                drawGlow(nh, pulseIntensity);
+            }
+        }
+    }
+
+    // 3. postrender — nodes on top
+    for (const n of allNodes) {
+        shell(n.x, n.y, n.r, n.ir);
+        n.icon(n.x, n.y);
+        if (n.label) renderText(n.label, n.x, n.y + (n.r || NODE_R) + 6, WHITE, FONT, 'center', 'top');
+    }
+
+    // Neighbourhood node sub-labels
+    renderText('N1', nhood1.x, nhood1.y + 40 + 6, 'rgba(255,255,255,0.5)', 'bold 13px Arial, sans-serif', 'center', 'top');
+    renderText('N2', nhood2.x, nhood2.y + 40 + 6, 'rgba(255,255,255,0.5)', 'bold 13px Arial, sans-serif', 'center', 'top');
+    renderText('N3', nhood3.x, nhood3.y + 40 + 6, 'rgba(255,255,255,0.5)', 'bold 13px Arial, sans-serif', 'center', 'top');
+    renderText('N4', nhood4.x, nhood4.y + 40 + 6, 'rgba(255,255,255,0.5)', 'bold 13px Arial, sans-serif', 'center', 'top');
+
+    // Explanatory text at bottom
+    renderText(
+        'Chunks are pushed outward through the network to the neighbourhood responsible for their address.',
+        W/2, H - 28, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top'
+    );
+
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

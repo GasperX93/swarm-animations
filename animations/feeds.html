@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Feeds – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconLaptop(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(x-12, y-10, 24, 16); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x-16, y+6); ctx.lineTo(x+16, y+6);
+    ctx.lineTo(x+16, y+10); ctx.lineTo(x-16, y+10);
+    ctx.closePath(); ctx.stroke();
+}
+
+function iconChunk(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    const w = 18, h = 22;
+    const lx = x - w/2, ty = y - h/2;
+    const fold = 6;
+    ctx.beginPath();
+    ctx.moveTo(lx, ty);
+    ctx.lineTo(lx + w - fold, ty);
+    ctx.lineTo(lx + w, ty + fold);
+    ctx.lineTo(lx + w, ty + h);
+    ctx.lineTo(lx, ty + h);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(lx + w - fold, ty);
+    ctx.lineTo(lx + w - fold, ty + fold);
+    ctx.lineTo(lx + w, ty + fold);
+    ctx.stroke();
+}
+
+function iconHexDouble(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI/3*i - Math.PI/6;
+            const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 14);
+    hex(x, y, 9);
+}
+
+// ── Easing helpers ──
+function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+// ── Animation state ──
+// Phases of a single version cycle:
+//   0: owner creates chunk (chunk appears, arrow to content)   0–1.5s
+//   1: chunk travels to network node                           1.5–3.0s
+//   2: chunk stored, previous version dims                     3.0–4.5s
+//   3: reader queries feed                                     4.5–6.0s
+//   4: reader follows pointer to content                       6.0–7.5s
+//   5: hold / display result                                   7.5–9.0s
+// Total per version: 9s. After 3 versions, reset.
+
+const PHASE_DUR = 1.5;    // seconds per phase
+const PHASES = 6;
+const CYCLE_DUR = PHASE_DUR * PHASES; // 9s per version
+const TOTAL_VERSIONS = 3;
+const FULL_CYCLE = CYCLE_DUR * TOTAL_VERSIONS + 2.0; // +2s pause before restart
+
+let elapsed = 0;
+
+// Pre-generate hashes for determinism
+const contentHashes = [];
+const chunkHashes = [];
+for (let i = 0; i < TOTAL_VERSIONS; i++) {
+    contentHashes.push(rngHex(8));
+    chunkHashes.push(rngHex(8));
+}
+
+// ── Node positions ──
+const ownerNode = { x: 130, y: 340, r: NODE_R, ir: INNER_R, icon: iconLaptop, label: 'Feed Owner' };
+const readerNode = { x: 1150, y: 340, r: NODE_R, ir: INNER_R, icon: iconLaptop, label: 'Reader' };
+const networkNode = { x: 640, y: 150, r: 34, ir: 24, icon: iconHexDouble, label: 'Network' };
+
+// Feed version slots — center timeline
+const versionSlots = [
+    { x: 440, y: 340 },
+    { x: 640, y: 340 },
+    { x: 840, y: 340 },
+];
+
+// Content chunks — below the version chunks
+const contentSlots = [
+    { x: 440, y: 520 },
+    { x: 640, y: 520 },
+    { x: 840, y: 520 },
+];
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Feeds', W/2, 21);
+}
+
+// ── Scene drawing helpers ──
+
+function drawFeedChunk(x, y, version, alpha, active) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // Outer rounded rect for the chunk
+    const w = 70, h = 50, rad = 8;
+    ctx.beginPath();
+    ctx.moveTo(x - w/2 + rad, y - h/2);
+    ctx.lineTo(x + w/2 - rad, y - h/2);
+    ctx.arcTo(x + w/2, y - h/2, x + w/2, y - h/2 + rad, rad);
+    ctx.lineTo(x + w/2, y + h/2 - rad);
+    ctx.arcTo(x + w/2, y + h/2, x + w/2 - rad, y + h/2, rad);
+    ctx.lineTo(x - w/2 + rad, y + h/2);
+    ctx.arcTo(x - w/2, y + h/2, x - w/2, y + h/2 - rad, rad);
+    ctx.lineTo(x - w/2, y - h/2 + rad);
+    ctx.arcTo(x - w/2, y - h/2, x - w/2 + rad, y - h/2, rad);
+    ctx.closePath();
+
+    ctx.fillStyle = active ? ORANGE : '#5a3a2a';
+    ctx.fill();
+    ctx.strokeStyle = WHITE;
+    ctx.lineWidth = active ? 2.5 : 1.5;
+    ctx.stroke();
+
+    // Version label
+    ctx.fillStyle = WHITE;
+    ctx.font = 'bold 18px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('v' + version, x, y - 6);
+
+    // Hash
+    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(chunkHashes[version - 1], x, y + 14);
+
+    ctx.restore();
+}
+
+function drawContentChunk(x, y, version, alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    const w = 60, h = 40, rad = 6;
+    ctx.beginPath();
+    ctx.moveTo(x - w/2 + rad, y - h/2);
+    ctx.lineTo(x + w/2 - rad, y - h/2);
+    ctx.arcTo(x + w/2, y - h/2, x + w/2, y - h/2 + rad, rad);
+    ctx.lineTo(x + w/2, y + h/2 - rad);
+    ctx.arcTo(x + w/2, y + h/2, x + w/2 - rad, y + h/2, rad);
+    ctx.lineTo(x - w/2 + rad, y + h/2);
+    ctx.arcTo(x - w/2, y + h/2, x - w/2, y + h/2 - rad, rad);
+    ctx.lineTo(x - w/2, y - h/2 + rad);
+    ctx.arcTo(x - w/2, y - h/2, x - w/2 + rad, y - h/2, rad);
+    ctx.closePath();
+
+    ctx.fillStyle = DARK;
+    ctx.fill();
+    ctx.strokeStyle = WHITE;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Content label
+    ctx.fillStyle = WHITE;
+    ctx.font = 'bold 13px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Content', x, y - 6);
+
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillText(contentHashes[version - 1], x, y + 10);
+
+    ctx.restore();
+}
+
+function drawArrow(x1, y1, x2, y2, color, alpha, width, dashed) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color || ORANGE;
+    ctx.lineWidth = width || 2;
+    ctx.fillStyle = color || ORANGE;
+
+    if (dashed) ctx.setLineDash([6, 4]);
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+
+    // Arrowhead
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const headLen = 10;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - headLen * Math.cos(angle - 0.4), y2 - headLen * Math.sin(angle - 0.4));
+    ctx.lineTo(x2 - headLen * Math.cos(angle + 0.4), y2 - headLen * Math.sin(angle + 0.4));
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.setLineDash([]);
+    ctx.restore();
+}
+
+function drawTravelingPacket(x1, y1, x2, y2, progress) {
+    const px = x1 + (x2 - x1) * progress;
+    const py = y1 + (y2 - y1) * progress;
+    ctx.beginPath();
+    ctx.arc(px, py, 6, 0, Math.PI * 2);
+    ctx.fillStyle = ORANGE;
+    ctx.fill();
+    ctx.strokeStyle = WHITE;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+}
+
+function drawDashedLine(x1, y1, x2, y2, color, alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color || WHITE;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+}
+
+// ── Scene logic ──
+
+function drawScene() {
+    // Clear
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+
+    // Determine current version and phase
+    let currentVersionIdx = Math.floor(elapsed / CYCLE_DUR);
+    let cycleTime = elapsed % CYCLE_DUR;
+
+    if (currentVersionIdx >= TOTAL_VERSIONS) {
+        // In the pause period — show all 3 versions, v3 active, then fade to restart
+        currentVersionIdx = TOTAL_VERSIONS - 1;
+        cycleTime = CYCLE_DUR; // fully complete
+    }
+
+    let phase = Math.floor(cycleTime / PHASE_DUR);
+    let phaseT = (cycleTime - phase * PHASE_DUR) / PHASE_DUR;
+    if (phase >= PHASES) { phase = PHASES - 1; phaseT = 1; }
+
+    // Timeline baseline
+    const timelineY = 340;
+    const timelineX1 = 300;
+    const timelineX2 = 980;
+
+    // Draw timeline axis
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = WHITE;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 6]);
+    ctx.beginPath();
+    ctx.moveTo(timelineX1, timelineY);
+    ctx.lineTo(timelineX2, timelineY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Timeline label
+    renderText('Feed Timeline', 640, 275, 'rgba(255,255,255,0.4)', 'bold 13px Arial, sans-serif', 'center', 'top');
+
+    // Draw completed versions
+    for (let v = 0; v < currentVersionIdx; v++) {
+        const slot = versionSlots[v];
+        const cSlot = contentSlots[v];
+        const dimAlpha = 0.3;
+
+        drawFeedChunk(slot.x, slot.y, v + 1, dimAlpha, false);
+        drawContentChunk(cSlot.x, cSlot.y, v + 1, dimAlpha);
+        drawArrow(slot.x, slot.y + 25, cSlot.x, cSlot.y - 20, ORANGE, dimAlpha, 1.5, false);
+    }
+
+    // Draw current version based on phase
+    const vi = currentVersionIdx;
+    const slot = versionSlots[vi];
+    const cSlot = contentSlots[vi];
+
+    if (vi < TOTAL_VERSIONS) {
+        if (phase >= 0) {
+            // Phase 0: chunk appears at owner, grows in
+            if (phase === 0) {
+                const scale = easeOut(phaseT);
+                const chunkAppearX = ownerNode.x + 80 + (slot.x - ownerNode.x - 80) * 0;
+
+                // Show chunk growing near owner
+                ctx.save();
+                ctx.translate(ownerNode.x + 90, timelineY);
+                ctx.scale(scale, scale);
+                ctx.translate(-(ownerNode.x + 90), -timelineY);
+                drawFeedChunk(ownerNode.x + 90, timelineY, vi + 1, 1.0, true);
+                ctx.restore();
+
+                // Content chunk appears below
+                ctx.save();
+                ctx.translate(cSlot.x, cSlot.y);
+                ctx.scale(scale, scale);
+                ctx.translate(-cSlot.x, -cSlot.y);
+                drawContentChunk(cSlot.x, cSlot.y, vi + 1, scale);
+                ctx.restore();
+
+                // "Creating..." label
+                if (phaseT > 0.3) {
+                    renderText('Creating v' + (vi + 1) + '...', ownerNode.x + 90, timelineY - 42,
+                        'rgba(255,255,255,' + clamp01((phaseT - 0.3) / 0.3) + ')',
+                        'bold 13px Arial, sans-serif', 'center', 'top');
+                }
+            }
+
+            // Phase 1: chunk travels from owner area to its slot position
+            if (phase === 1) {
+                const travelT = easeInOut(phaseT);
+                const startX = ownerNode.x + 90;
+                const curX = startX + (slot.x - startX) * travelT;
+
+                drawFeedChunk(curX, timelineY, vi + 1, 1.0, true);
+
+                // Content chunk visible
+                drawContentChunk(cSlot.x, cSlot.y, vi + 1, 1.0);
+
+                // Arrow from chunk to content grows in
+                if (travelT > 0.5) {
+                    const arrowT = clamp01((travelT - 0.5) / 0.5);
+                    const arrowEndY = (slot.y + 25) + (cSlot.y - 20 - (slot.y + 25)) * arrowT;
+                    drawArrow(curX, timelineY + 25, cSlot.x, arrowEndY, ORANGE, 1.0, 1.5, false);
+                }
+
+                // Traveling packet effect
+                drawTravelingPacket(startX, timelineY, slot.x, timelineY, travelT);
+            }
+
+            // Phase 2: chunk settled, previous version dims
+            if (phase >= 2) {
+                drawFeedChunk(slot.x, slot.y, vi + 1, 1.0, true);
+                drawContentChunk(cSlot.x, cSlot.y, vi + 1, 1.0);
+                drawArrow(slot.x, slot.y + 25, cSlot.x, cSlot.y - 20, ORANGE, 1.0, 1.5, false);
+
+                if (phase === 2) {
+                    // "Stored" indicator
+                    renderText('Stored on network', slot.x, slot.y - 42,
+                        'rgba(255,255,255,' + clamp01(phaseT / 0.3) + ')',
+                        'bold 13px Arial, sans-serif', 'center', 'top');
+
+                    // Line from chunk up to network node
+                    const lineAlpha = easeOut(clamp01(phaseT / 0.6));
+                    drawDashedLine(slot.x, slot.y - 25, networkNode.x, networkNode.y + 30, WHITE, lineAlpha * 0.5);
+                }
+            }
+
+            // Phase 3: reader queries the feed — dashed line from reader to latest chunk
+            if (phase >= 3) {
+                // Connection from network node
+                drawDashedLine(slot.x, slot.y - 25, networkNode.x, networkNode.y + 30, WHITE, 0.4);
+
+                if (phase === 3) {
+                    const queryT = easeInOut(phaseT);
+                    // Dashed query line from reader to slot
+                    const qEndX = readerNode.x - 50 + (slot.x + 35 - (readerNode.x - 50)) * queryT;
+                    drawDashedLine(readerNode.x - 50, readerNode.y, qEndX, timelineY, WHITE, 0.8);
+
+                    // Query packet traveling
+                    drawTravelingPacket(readerNode.x - 50, readerNode.y, slot.x + 35, timelineY, queryT);
+
+                    // "Querying feed..." label
+                    renderText('Querying feed...', readerNode.x - 30, readerNode.y - 65,
+                        'rgba(255,255,255,' + clamp01(phaseT / 0.3) + ')',
+                        'bold 13px Arial, sans-serif', 'center', 'top');
+                }
+            }
+
+            // Phase 4: reader follows pointer to content
+            if (phase >= 4) {
+                // Query line stays
+                drawDashedLine(readerNode.x - 50, readerNode.y, slot.x + 35, timelineY, WHITE, 0.5);
+
+                if (phase === 4) {
+                    const followT = easeInOut(phaseT);
+
+                    // Highlight the arrow from chunk to content
+                    drawArrow(slot.x, slot.y + 25, cSlot.x, cSlot.y - 20, ORANGE, 1.0, 3, false);
+
+                    // Packet following the pointer down to content
+                    drawTravelingPacket(slot.x, slot.y + 25, cSlot.x, cSlot.y - 20, followT);
+
+                    // "Resolving content..." label
+                    renderText('Following pointer...', (slot.x + cSlot.x) / 2 + 45, (slot.y + cSlot.y) / 2,
+                        'rgba(255,255,255,' + clamp01(phaseT / 0.3) + ')',
+                        'bold 13px Arial, sans-serif', 'center', 'top');
+                }
+            }
+
+            // Phase 5: hold — content retrieved, show result
+            if (phase >= 5) {
+                // Query line stays
+                drawDashedLine(readerNode.x - 50, readerNode.y, slot.x + 35, timelineY, WHITE, 0.4);
+
+                // Content highlight glow
+                ctx.save();
+                ctx.shadowColor = ORANGE;
+                ctx.shadowBlur = 15 + 5 * Math.sin(elapsed * 3);
+                drawContentChunk(cSlot.x, cSlot.y, vi + 1, 1.0);
+                ctx.restore();
+
+                // Redraw without glow on top
+                drawContentChunk(cSlot.x, cSlot.y, vi + 1, 1.0);
+
+                // "Content retrieved!" label
+                const holdAlpha = phase === 5 ? clamp01(phaseT / 0.3) : 1;
+                renderText('Content v' + (vi + 1) + ' retrieved!', cSlot.x, cSlot.y + 28,
+                    'rgba(255,255,255,' + holdAlpha + ')',
+                    'bold 13px Arial, sans-serif', 'center', 'top');
+
+                // Return packet to reader
+                if (phase === 5 && phaseT > 0.3) {
+                    const returnT = easeInOut(clamp01((phaseT - 0.3) / 0.5));
+                    drawTravelingPacket(slot.x + 35, timelineY, readerNode.x - 50, readerNode.y, returnT);
+                }
+            }
+        }
+    }
+
+    // In the final hold period, draw all 3 with v3 active
+    if (elapsed >= CYCLE_DUR * TOTAL_VERSIONS) {
+        const fadeProgress = clamp01((elapsed - CYCLE_DUR * TOTAL_VERSIONS) / 2.0);
+
+        for (let v = 0; v < TOTAL_VERSIONS; v++) {
+            const s = versionSlots[v];
+            const c = contentSlots[v];
+            const isLast = v === TOTAL_VERSIONS - 1;
+            const alpha = isLast ? 1.0 : 0.3;
+
+            drawFeedChunk(s.x, s.y, v + 1, alpha * (1 - fadeProgress * 0.5), isLast);
+            drawContentChunk(c.x, c.y, v + 1, alpha * (1 - fadeProgress * 0.5));
+            drawArrow(s.x, s.y + 25, c.x, c.y - 20, ORANGE, alpha * (1 - fadeProgress * 0.5), 1.5, false);
+        }
+
+        // Connection lines
+        drawDashedLine(versionSlots[2].x, versionSlots[2].y - 25, networkNode.x, networkNode.y + 30, WHITE, 0.4 * (1 - fadeProgress));
+        drawDashedLine(readerNode.x - 50, readerNode.y, versionSlots[2].x + 35, timelineY, WHITE, 0.4 * (1 - fadeProgress));
+    }
+
+    // ── Postrender: nodes on top ──
+    // Owner node
+    shell(ownerNode.x, ownerNode.y, ownerNode.r, ownerNode.ir);
+    ownerNode.icon(ownerNode.x, ownerNode.y);
+    renderText(ownerNode.label, ownerNode.x, ownerNode.y + ownerNode.r + 6, WHITE, FONT, 'center', 'top');
+
+    // Reader node
+    shell(readerNode.x, readerNode.y, readerNode.r, readerNode.ir);
+    readerNode.icon(readerNode.x, readerNode.y);
+    renderText(readerNode.label, readerNode.x, readerNode.y + readerNode.r + 6, WHITE, FONT, 'center', 'top');
+
+    // Network node
+    shell(networkNode.x, networkNode.y, networkNode.r, networkNode.ir);
+    networkNode.icon(networkNode.x, networkNode.y);
+    renderText(networkNode.label, networkNode.x, networkNode.y + networkNode.r + 6, WHITE, 'bold 15px Arial, sans-serif', 'center', 'top');
+
+    // "Single-Owner Chunk" labels above version slots
+    for (let v = 0; v <= currentVersionIdx && v < TOTAL_VERSIONS; v++) {
+        const s = versionSlots[v];
+        const visible = v < currentVersionIdx || (v === currentVersionIdx && elapsed >= v * CYCLE_DUR + PHASE_DUR * 2);
+        if (visible) {
+            const alpha = v < currentVersionIdx ? 0.3 : 0.7;
+            renderText('SOC', s.x, s.y + 32, 'rgba(255,255,255,' + alpha + ')', 'bold 11px monospace', 'center', 'top');
+        }
+    }
+
+    // Bottom explanatory text
+    renderText(
+        'Feeds create updateable pointers on immutable storage \u2014 each version is a single-owner chunk pointing to the latest content.',
+        W / 2, H - 30,
+        'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top'
+    );
+}
+
+// ── Main loop ──
+let lastTime = 0;
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+    elapsed += dt;
+
+    // Loop
+    if (elapsed >= FULL_CYCLE) {
+        elapsed = 0;
+        // Re-seed for consistent hashes
+        seed = 42;
+    }
+
+    drawScene();
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

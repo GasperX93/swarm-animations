@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Topology – Ethswarm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #272727; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+canvas { max-width: 1280px; width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="680"></canvas>
+<script>
+// ── Constants ──
+const W = 1280, H = 680;
+const BG = '#272727', ORANGE = '#d4633a', WHITE = '#ffffff', DARK = '#191919';
+const NODE_R = 44, INNER_R = 32, STROKE_W = 3, LINE_W = 1.5;
+const FONT = 'bold 17px Arial, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── Seeded RNG ──
+let seed = 42;
+function rng() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+function rngHex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(rng()*16)]; return s; }
+
+// ── Geometry helpers ──
+function ptLen(a, b) { const dx = b[0]-a[0], dy = b[1]-a[1]; return Math.sqrt(dx*dx+dy*dy); }
+function pathLen(pts) { let s=0; for(let i=1;i<pts.length;i++) s+=ptLen(pts[i-1],pts[i]); return s; }
+function posAt(pts, d) {
+    let rem = d;
+    for (let i=1; i<pts.length; i++) {
+        const seg = ptLen(pts[i-1], pts[i]);
+        if (rem <= seg) {
+            const t = rem / seg;
+            return [pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t, pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t];
+        }
+        rem -= seg;
+    }
+    return pts[pts.length-1];
+}
+
+// ── Drawing primitives ──
+function ln(x1,y1,x2,y2,color,width) {
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    ctx.strokeStyle = color || WHITE; ctx.lineWidth = width || LINE_W; ctx.stroke();
+}
+
+function shell(x,y,r,ir) {
+    r = r || NODE_R; ir = ir || INNER_R;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = ORANGE; ctx.fill();
+    ctx.strokeStyle = WHITE; ctx.lineWidth = STROKE_W; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,ir,0,Math.PI*2);
+    ctx.fillStyle = DARK; ctx.fill();
+}
+
+function renderText(text,x,y,color,font,align,baseline) {
+    ctx.fillStyle = color || WHITE;
+    ctx.font = font || FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = baseline || 'top';
+    ctx.fillText(text,x,y);
+}
+
+// ── Icon functions ──
+function iconLaptop(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(x-12, y-10, 24, 16); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x-16, y+6); ctx.lineTo(x+16, y+6);
+    ctx.lineTo(x+16, y+10); ctx.lineTo(x-16, y+10);
+    ctx.closePath(); ctx.stroke();
+}
+
+function iconGlobe(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    const r = 13;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x, y, r*0.45, r, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x-r, y); ctx.lineTo(x+r, y); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x, y-r*0.45, r*0.85, r*0.2, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x, y+r*0.45, r*0.85, r*0.2, 0, 0, Math.PI*2); ctx.stroke();
+}
+
+function iconServer(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    const w = 20, h = 8, gap = 2;
+    for (let i = 0; i < 3; i++) {
+        const sy = y - 14 + i * (h + gap);
+        ctx.beginPath(); ctx.rect(x-w/2, sy, w, h); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x+w/2-4, sy+h/2, 1.5, 0, Math.PI*2);
+        ctx.fillStyle = WHITE; ctx.fill();
+    }
+}
+
+function iconHexDouble(x, y) {
+    ctx.strokeStyle = WHITE; ctx.lineWidth = 2;
+    function hex(cx, cy, r) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI/3*i - Math.PI/6;
+            const px = cx + r*Math.cos(a), py = cy + r*Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+    hex(x, y, 14);
+    hex(x, y, 9);
+}
+
+// ── Packet class ──
+class Packet {
+    constructor(pts, radius, speed, startDist) {
+        this.pts = pts;
+        this.radius = radius;
+        this.speed = speed;
+        this.total = pathLen(pts);
+        this.d = startDist % this.total;
+        this.life = 1;
+        this.destination = null;
+    }
+    update(dt) { this.d = (this.d + this.speed * dt) % this.total; }
+    draw() {
+        if (this.life <= 0) return;
+        const p = posAt(this.pts, this.d);
+        ctx.beginPath(); ctx.arc(p[0], p[1], this.radius, 0, Math.PI*2);
+        ctx.fillStyle = ORANGE; ctx.fill();
+    }
+}
+
+// ── Node positions ──
+// Left side: Traditional Internet
+const tradYou  = { x: 120, y: 340, r: NODE_R, ir: INNER_R, icon: iconLaptop, label: 'You' };
+const tradISP  = { x: 320, y: 340, r: NODE_R, ir: INNER_R, icon: iconGlobe,  label: 'ISP' };
+const tradSrvA = { x: 540, y: 170, r: NODE_R, ir: INNER_R, icon: iconServer, label: 'Server A' };
+const tradSrvB = { x: 540, y: 340, r: NODE_R, ir: INNER_R, icon: iconServer, label: 'Server B' };
+const tradSrvC = { x: 540, y: 510, r: NODE_R, ir: INNER_R, icon: iconServer, label: 'Server C' };
+
+// Right side: Swarm Network
+const swarmYou  = { x: 700, y: 340, r: NODE_R, ir: INNER_R, icon: iconLaptop, label: 'You' };
+const swarmISP  = { x: 860, y: 340, r: NODE_R, ir: INNER_R, icon: iconGlobe,  label: 'ISP' };
+const swarmN1  = { x: 990, y: 200, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const swarmN2  = { x: 990, y: 480, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const swarmN3  = { x: 1100, y: 140, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const swarmN4  = { x: 1100, y: 340, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const swarmN5  = { x: 1100, y: 520, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const swarmN6  = { x: 1210, y: 230, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+const swarmN7  = { x: 1210, y: 440, r: 34, ir: 24, icon: iconHexDouble, label: 'Node' };
+
+const allNodes = [tradYou, tradISP, tradSrvA, tradSrvB, tradSrvC,
+                  swarmYou, swarmISP, swarmN1, swarmN2, swarmN3, swarmN4, swarmN5, swarmN6, swarmN7];
+
+// ── Connection lines ──
+const tradLines = [
+    [tradYou, tradISP],
+    [tradISP, tradSrvA],
+    [tradISP, tradSrvB],
+    [tradISP, tradSrvC]
+];
+
+const swarmLines = [
+    [swarmYou, swarmISP],
+    [swarmISP, swarmN1],
+    [swarmISP, swarmN2],
+    [swarmN1, swarmN3],
+    [swarmN1, swarmN4],
+    [swarmN2, swarmN4],
+    [swarmN2, swarmN5],
+    [swarmN3, swarmN4],
+    [swarmN3, swarmN6],
+    [swarmN4, swarmN6],
+    [swarmN4, swarmN7],
+    [swarmN5, swarmN7]
+];
+
+function drawLines() {
+    // Dashed divider
+    ctx.setLineDash([6, 4]);
+    ln(640, 55, 640, H, 'rgba(255,255,255,0.2)', 1);
+    ctx.setLineDash([]);
+
+    for (const [a, b] of tradLines) ln(a.x, a.y, b.x, b.y);
+    for (const [a, b] of swarmLines) ln(a.x, a.y, b.x, b.y);
+}
+
+// ── Packet streams ──
+const packets = [];
+
+// Traditional: varying packet sizes (3–14px), irregular speed
+// Three streams: You → ISP → each Server
+const tradServers = [tradSrvA, tradSrvB, tradSrvC];
+for (const srv of tradServers) {
+    const path = [[tradYou.x, tradYou.y], [tradISP.x, tradISP.y], [srv.x, srv.y]];
+    const total = pathLen(path);
+    for (let i = 0; i < 4; i++) {
+        const size = 3 + rng() * 11;
+        const speed = 80 + rng() * 60;
+        packets.push(new Packet(path, size, speed, rng() * total));
+    }
+}
+
+// Swarm: uniform 5px, speed jittered ±14%
+const swarmPaths = [
+    [[swarmYou.x,swarmYou.y],[swarmISP.x,swarmISP.y],[swarmN1.x,swarmN1.y],[swarmN3.x,swarmN3.y],[swarmN6.x,swarmN6.y]],
+    [[swarmYou.x,swarmYou.y],[swarmISP.x,swarmISP.y],[swarmN1.x,swarmN1.y],[swarmN4.x,swarmN4.y],[swarmN7.x,swarmN7.y]],
+    [[swarmYou.x,swarmYou.y],[swarmISP.x,swarmISP.y],[swarmN2.x,swarmN2.y],[swarmN4.x,swarmN4.y],[swarmN6.x,swarmN6.y]],
+    [[swarmYou.x,swarmYou.y],[swarmISP.x,swarmISP.y],[swarmN2.x,swarmN2.y],[swarmN5.x,swarmN5.y],[swarmN7.x,swarmN7.y]],
+    [[swarmYou.x,swarmYou.y],[swarmISP.x,swarmISP.y],[swarmN1.x,swarmN1.y],[swarmN3.x,swarmN3.y]],
+    [[swarmYou.x,swarmYou.y],[swarmISP.x,swarmISP.y],[swarmN2.x,swarmN2.y],[swarmN5.x,swarmN5.y]]
+];
+
+for (const path of swarmPaths) {
+    const total = pathLen(path);
+    for (let i = 0; i < 3; i++) {
+        const speed = 100 * (0.86 + rng() * 0.28);
+        packets.push(new Packet(path, 5, speed, rng() * total));
+    }
+}
+
+// ── Header bar ──
+function drawHeader() {
+    ctx.fillStyle = ORANGE;
+    ctx.fillRect(0, 0, W, 42);
+    ctx.fillStyle = WHITE;
+    ctx.font = 'italic bold 22px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Traditional Internet vs Swarm Network', W/2, 21);
+}
+
+// ── Main loop ──
+let lastTime = 0;
+function frame(ts) {
+    const dt = Math.min((ts - lastTime) / 1000, 0.05);
+    lastTime = ts;
+
+    // 1. prerender
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    drawHeader();
+    renderText('Traditional Internet', 330, 60, WHITE, 'bold 18px Arial, sans-serif', 'center', 'top');
+    renderText('Swarm Network', 960, 60, WHITE, 'bold 18px Arial, sans-serif', 'center', 'top');
+    drawLines();
+
+    // 2. update + render packets
+    for (const p of packets) {
+        p.update(dt);
+        p.draw();
+    }
+
+    // 3. postrender — nodes on top
+    for (const n of allNodes) {
+        shell(n.x, n.y, n.r, n.ir);
+        n.icon(n.x, n.y);
+        if (n.label) renderText(n.label, n.x, n.y + (n.r || NODE_R) + 6, WHITE, FONT, 'center', 'top');
+    }
+
+    // Explanatory text
+    renderText(
+        'Traditional internet funnels traffic through centralized intermediaries — Swarm routes data peer-to-peer with no single point of control.',
+        W/2, H - 28, 'rgba(255,255,255,0.6)', '15px Arial, sans-serif', 'center', 'top'
+    );
+
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
