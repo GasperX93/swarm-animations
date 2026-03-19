@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swarm Educational Animations</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #272727;
+    color: #ffffff;
+    font-family: Arial, sans-serif;
+    min-height: 100vh;
+}
+.header {
+    background: #d4633a;
+    padding: 16px 0;
+    text-align: center;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+.header h1 {
+    font: italic bold 28px Georgia, serif;
+    color: #ffffff;
+}
+.header p {
+    font-size: 14px;
+    color: rgba(255,255,255,0.85);
+    margin-top: 4px;
+}
+.container {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 40px 20px;
+}
+.scene {
+    margin-bottom: 48px;
+}
+.scene-title {
+    font: bold 20px Arial, sans-serif;
+    color: #ffffff;
+    margin-bottom: 8px;
+    padding-left: 4px;
+}
+.scene-desc {
+    font-size: 14px;
+    color: rgba(255,255,255,0.6);
+    margin-bottom: 12px;
+    padding-left: 4px;
+}
+.scene iframe {
+    width: 100%;
+    max-width: 1280px;
+    height: 680px;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px;
+    display: block;
+}
+.footer {
+    text-align: center;
+    padding: 32px 20px;
+    color: rgba(255,255,255,0.4);
+    font-size: 13px;
+    border-top: 1px solid rgba(255,255,255,0.1);
+}
+.footer a {
+    color: #d4633a;
+    text-decoration: none;
+}
+.footer a:hover {
+    text-decoration: underline;
+}
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>Swarm Educational Animations</h1>
+    <p>Visual explanations of the Swarm decentralised storage network, based on the <a href="https://papers.ethswarm.org/p/book-of-swarm/" style="color:#fff;text-decoration:underline;">Book of Swarm</a></p>
+</div>
+<div class="container">
+
+    <div class="scene">
+        <div class="scene-title">1. Topology (Side-by-Side)</div>
+        <div class="scene-desc">Traditional internet funnels traffic through centralized intermediaries — Swarm routes data peer-to-peer.</div>
+        <iframe src="animations/topology-left-right.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">2. Topology (Stacked)</div>
+        <div class="scene-desc">The same comparison in a top-bottom layout.</div>
+        <iframe src="animations/topology-top-bottom.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">3. Push Syncing</div>
+        <div class="scene-desc">Chunks are pushed outward through the network to the neighbourhood responsible for their address.</div>
+        <iframe src="animations/push-syncing.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">4. Pull Syncing</div>
+        <div class="scene-desc">Nodes request missing chunks from peers to fill gaps in their local store.</div>
+        <iframe src="animations/pull-syncing.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">5. Chunk Retrieval</div>
+        <div class="scene-desc">Requests are forwarded via Kademlia routing to the closest node, which returns the chunk along the same path.</div>
+        <iframe src="animations/chunk-retrieval.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">6. Postage Stamps</div>
+        <div class="scene-desc">Every chunk requires a postage stamp — proof of payment that funds its storage on the network.</div>
+        <iframe src="animations/postage-stamps.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">7. Erasure Coding</div>
+        <div class="scene-desc">Parity chunks enable file reconstruction even when some chunks are lost from the network.</div>
+        <iframe src="animations/erasure-coding.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">8. PSS Messaging</div>
+        <div class="scene-desc">Trojan chunks carry encrypted messages routed to target neighbourhoods — enabling private communication over Swarm.</div>
+        <iframe src="animations/pss-messaging.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">9. ACT Access Control</div>
+        <div class="scene-desc">The Access Control Trie manages encryption keys — granting and revoking access to content on Swarm.</div>
+        <iframe src="animations/act-access-control.html" loading="lazy"></iframe>
+    </div>
+
+    <div class="scene">
+        <div class="scene-title">10. Feeds</div>
+        <div class="scene-desc">Single-owner chunks form updateable pointers on immutable storage — each version points to the latest content.</div>
+        <iframe src="animations/feeds.html" loading="lazy"></iframe>
+    </div>
+
+</div>
+<div class="footer">
+    Design and concept by <a href="https://github.com/Cafe137">@Cafe137</a> · Based on the <a href="https://papers.ethswarm.org/p/book-of-swarm/">Book of Swarm</a> · <a href="https://www.ethswarm.org/">ethswarm.org</a>
+</div>
+</body>
+</html>
