@@ -1,6 +1,6 @@
 # Swarm Educational Animations
 
-A collection of self-contained canvas animations that visually explain how the [Swarm](https://www.ethswarm.org/) decentralised storage network works. Each animation is a single HTML file with vanilla JS — no frameworks, no build tools, no external dependencies.
+A collection of self-contained canvas animations that visually explain how the [Swarm](https://www.ethswarm.org/) decentralised storage network works, based on the [Book of Swarm](https://papers.ethswarm.org/p/book-of-swarm/). Each animation is a single HTML file with vanilla JS — no frameworks, no build tools, no external dependencies.
 
 ## Credits
 
